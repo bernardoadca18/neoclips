@@ -1,0 +1,1 @@
+# NeoClips Core Module
