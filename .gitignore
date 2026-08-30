@@ -1,0 +1,8 @@
+.env
+cache
+build
+*.tar.gz
+node_modules
+.venv
+.cache
+
