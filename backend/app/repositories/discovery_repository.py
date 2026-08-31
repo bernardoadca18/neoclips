@@ -79,7 +79,7 @@ class ClipCandidateRepository(BaseRepository[ClipCandidate]):
         result = await self.session.execute(
             select(ClipCandidate)
             .where(ClipCandidate.run_id == run_id)
-            .where(ClipCandidate.is_duplicate == False)
+            .where(ClipCandidate.is_duplicate.is_(False))
             .order_by(ClipCandidate.score_v1.desc().nulls_last())
         )
         return list(result.scalars().all())
@@ -89,7 +89,7 @@ class ClipCandidateRepository(BaseRepository[ClipCandidate]):
         result = await self.session.execute(
             select(ClipCandidate)
             .where(ClipCandidate.run_id == run_id)
-            .where(ClipCandidate.selected == True)
+            .where(ClipCandidate.selected.is_(True))
             .order_by(ClipCandidate.selection_rank)
         )
         return list(result.scalars().all())

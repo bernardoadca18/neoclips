@@ -16,17 +16,23 @@ class BaseRepository[ModelType: Base]:
         self.session = session
         self.model = model
 
-    async def get(self, id: UUID) -> ModelType | None:
+    async def get_by_id(self, id: UUID) -> ModelType | None:
         """Get entity by ID."""
-        stmt = select(self.model).where(self.model.id == id)  # type: ignore[attr-defined]
+        stmt = select(self.model).where(self.model.id == id)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    # Alias for backwards compatibility
+    get = get_by_id
 
     async def get_all(self, limit: int = 100, offset: int = 0) -> list[ModelType]:
         """Get all entities with pagination."""
         stmt = select(self.model).limit(limit).offset(offset)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    # Alias for consistency
+    list = get_all
 
     async def create(self, data: dict[str, Any]) -> ModelType:
         """Create new entity."""
@@ -36,14 +42,14 @@ class BaseRepository[ModelType: Base]:
         await self.session.refresh(entity)
         return entity
 
-    async def update(self, entity: ModelType, data: dict[str, Any]) -> ModelType:
+    async def update(self, entity: ModelType, data: dict[str, Any] | None = None) -> ModelType:
         """Update entity.
 
-        Allows setting fields to None by checking if key exists in data.
-        Differentiates 'field omitted' from 'field set to None'.
+        If data is provided, updates fields from the dict.
+        If data is None, assumes entity was already modified in-place.
         """
-        for key, value in data.items():
-            if key in data:
+        if data is not None:
+            for key, value in data.items():
                 setattr(entity, key, value)
         await self.session.flush()
         await self.session.refresh(entity)

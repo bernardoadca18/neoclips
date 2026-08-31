@@ -9,9 +9,9 @@ This migration adds fields required for durable, restartable discovery orchestra
 - DiscoveryWindow: processing timestamps, attempt counting
 - ClipCandidate: SHA-256 fingerprint, discovery rank
 """
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = '0008_durable_orchestration'

@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import typing
 from datetime import UTC, datetime
 from math import ceil
 from uuid import UUID, uuid4
@@ -168,7 +169,7 @@ async def start_discovery(
             if existing_run.request_fingerprint == request_fingerprint:
                 # Same key, same config - return existing run
                 logger.info(f"Returning existing discovery run for idempotency key {idempotency_key[:8]}...")
-                return existing_run
+                return typing.cast(DiscoveryRun, existing_run)
             else:
                 # Same key, different config - 409 Conflict
                 raise HTTPException(
@@ -236,7 +237,7 @@ async def start_discovery(
             existing_run = result.scalar_one_or_none()
             if existing_run:
                 if existing_run.request_fingerprint == request_fingerprint:
-                    return existing_run
+                    return typing.cast(DiscoveryRun, existing_run)
                 else:
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,

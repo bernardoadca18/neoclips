@@ -14,8 +14,10 @@ Recovery:
 import hashlib
 import logging
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID, uuid4
 
+from celery import Task
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,8 +62,8 @@ def compute_candidate_fingerprint(start_seconds: float, end_seconds: float) -> s
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-@celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
-def process_window(self, window_id: str, run_id: str) -> dict:
+@celery_app.task(bind=True, max_retries=3, default_retry_delay=60)  # type: ignore[untyped-decorator]
+def process_window(self: Task, window_id: str, run_id: str) -> dict[str, Any]:
     """
     Process a single discovery window.
 
@@ -141,7 +143,7 @@ async def _fetch_window_segments_paginated(
     return all_segments
 
 
-async def _process_window(window_id: UUID, run_id: UUID) -> dict:
+async def _process_window(window_id: UUID, run_id: UUID) -> dict[str, Any]:
     """Async implementation of process_window with stale recovery and cascading scheduling."""
     async with async_session_factory() as session:
         # Get window with lock to prevent concurrent processing
@@ -463,8 +465,8 @@ async def _schedule_next_or_finalizer(session: AsyncSession, run_id: UUID) -> No
                 logger.info(f"All windows done, scheduled finalizer for run {run_id}")
 
 
-@celery_app.task(bind=True, max_retries=2)
-def finalize_discovery(self, run_id: str) -> dict:
+@celery_app.task(bind=True, max_retries=2)  # type: ignore[untyped-decorator]
+def finalize_discovery(self: Task, run_id: str) -> dict[str, Any]:
     """
     Finalize a discovery run after all windows are processed.
 
@@ -484,7 +486,7 @@ def finalize_discovery(self, run_id: str) -> dict:
     return asyncio.run(_finalize_discovery(UUID(run_id)))
 
 
-async def _finalize_discovery(run_id: UUID) -> dict:
+async def _finalize_discovery(run_id: UUID) -> dict[str, Any]:
     """Async implementation of finalize_discovery."""
     async with async_session_factory() as session:
         result = await session.execute(
@@ -579,8 +581,8 @@ async def _finalize_discovery(run_id: UUID) -> dict:
         }
 
 
-@celery_app.task
-def recover_stale_runs() -> dict:
+@celery_app.task  # type: ignore[untyped-decorator]
+def recover_stale_runs() -> dict[str, Any]:
     """
     Recover stale runs and windows.
 
@@ -597,7 +599,7 @@ def recover_stale_runs() -> dict:
     return asyncio.run(_recover_stale_runs())
 
 
-async def _recover_stale_runs() -> dict:
+async def _recover_stale_runs() -> dict[str, Any]:
     """Async implementation of recover_stale_runs."""
     async with async_session_factory() as session:
         stats = {

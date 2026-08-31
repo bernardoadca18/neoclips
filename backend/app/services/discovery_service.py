@@ -231,7 +231,7 @@ class DiscoveryService:
                     continue
 
             # Store parsed response
-            window.llm_response_parsed = json.dumps({  # type: ignore[assignment]
+            window.llm_response_parsed = json.dumps({
                 "clips": [
                     {
                         "start_segment_id": str(s.start_segment_id),

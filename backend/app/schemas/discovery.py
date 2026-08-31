@@ -1,5 +1,6 @@
 """Pydantic schemas for Discovery Run, Window, and Clip Candidate."""
 
+import typing
 from datetime import datetime
 from uuid import UUID
 
@@ -84,7 +85,7 @@ class DiscoveryWindowUpdate(BaseModel):
 
     status: str | None = None
     llm_response_raw: str | None = None
-    llm_response_parsed: dict | None = None
+    llm_response_parsed: dict[str, typing.Any] | None = None
     error_message: str | None = None
     processed_at: datetime | None = None
 
@@ -144,7 +145,7 @@ class ClipCandidateUpdate(BaseModel):
     """Schema for updating a ClipCandidate."""
 
     score_v1: float | None = None
-    score_v1_components: dict | None = None
+    score_v1_components: dict[str, typing.Any] | None = None
     is_duplicate: bool | None = None
     duplicate_of_id: UUID | None = None
     selected: bool | None = None
@@ -190,7 +191,7 @@ class ClipCandidateRead(BaseModel):
     emotional_intensity: float | None
     topic_relevance: float | None
     score_v1: float | None
-    score_v1_components: dict | None
+    score_v1_components: dict[str, typing.Any] | None
     candidate_fingerprint: str | None
     discovery_rank: int | None
     is_duplicate: bool

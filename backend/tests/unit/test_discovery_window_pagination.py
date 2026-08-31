@@ -8,7 +8,6 @@ Tests verify correct pagination behavior with:
 - Exact final page
 """
 
-import asyncio
 from uuid import uuid4
 
 import httpx
@@ -16,8 +15,6 @@ import pytest
 
 from app.clients.media_indexer_client import (
     MediaIndexerClient,
-    TranscriptSegmentOut,
-    TranscriptSegmentPage,
 )
 
 

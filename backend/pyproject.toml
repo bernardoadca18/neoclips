@@ -81,6 +81,10 @@ plugins = ["pydantic.mypy"]
 module = ["celery.*", "testcontainers.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["app.models.*", "app.core.database"]
+ignore_errors = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

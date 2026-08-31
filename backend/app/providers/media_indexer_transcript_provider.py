@@ -1,6 +1,9 @@
 """Media Indexer transcript provider implementation."""
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from app.clients.media_indexer_client import (
@@ -12,6 +15,9 @@ from app.providers.exceptions import (
     TranscriptNotFoundError,
     TranscriptProviderError,
 )
+
+if TYPE_CHECKING:
+    from app.clients.transcript_segment_stream import TranscriptSegmentStream
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +79,7 @@ class MediaIndexerTranscriptProvider:
         self,
         transcription_id: str,
         page_size: int = 500,
-    ):
+    ) -> TranscriptSegmentStream:
         """Get a streaming transcript iterator for bounded memory usage.
 
         This is the recommended method for production use with large
@@ -119,10 +125,11 @@ class MediaIndexerTranscriptProvider:
             List of transcript segments overlapping the time range
         """
         stream = await self.get_transcript_stream(transcription_id)
-        return await stream.fetch_all_for_window(
+        result: list[TranscriptSegmentOut] = await stream.fetch_all_for_window(
             window_start_seconds=start_seconds,
             window_end_seconds=end_seconds,
         )
+        return result
 
 
 __all__ = ["MediaIndexerTranscriptProvider"]

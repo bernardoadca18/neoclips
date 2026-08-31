@@ -12,6 +12,7 @@ The score is a weighted combination of:
 All weights are documented and versioned for reproducibility.
 """
 
+import typing
 from dataclasses import dataclass
 
 
@@ -259,7 +260,7 @@ def calculate_clip_score_v1(
     hook_type: str | None,
     source_duration_seconds: float,
     total_transcript_length: int,
-) -> tuple[float, dict]:
+) -> tuple[float, dict[str, typing.Any]]:
     """
     Convenience function to calculate clip_score_v1.
 

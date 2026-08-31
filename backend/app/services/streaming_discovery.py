@@ -451,9 +451,8 @@ class StreamingDiscoveryService:
 
         for db_window in db_windows:
             # If we've passed the window's end, mark it complete
-            if max_segment_end > db_window.end_seconds + self.window_config.overlap_seconds:
-                if db_window.window_index in window_buffers:
-                    window_buffers[db_window.window_index].mark_complete()
+            if max_segment_end > db_window.end_seconds + self.window_config.overlap_seconds and db_window.window_index in window_buffers:
+                window_buffers[db_window.window_index].mark_complete()
 
     async def _process_window_buffer(
         self,

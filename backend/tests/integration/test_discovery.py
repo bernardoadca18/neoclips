@@ -1,6 +1,5 @@
 """Tests for Stage 3.2 Discovery endpoints."""
 
-import hashlib
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -14,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.clients.media_indexer_client import TranscriptionOut
 from app.core.database import get_session
 from app.main import app
-from app.models.entities import ClipSource, ClipWorkflow, DiscoveryRun, DiscoveryWindow
+from app.models.entities import ClipSource, ClipWorkflow, DiscoveryWindow
 
 
 @pytest.fixture

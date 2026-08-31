@@ -9,6 +9,7 @@ Provides tools to evaluate discovery quality:
 
 import json
 import logging
+import typing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -83,7 +84,7 @@ class EvaluationReport:
     generated_at: datetime
     evaluation_version: str = "1.0"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, typing.Any]:
         """Convert report to dictionary for JSON serialization."""
         return {
             "evaluation_version": self.evaluation_version,
@@ -296,7 +297,8 @@ class DiscoveryEvaluator:
 
         mean = sum(values) / len(values)
         variance = sum((v - mean) ** 2 for v in values) / len(values)
-        return variance**0.5
+        std: float = variance**0.5
+        return std
 
 
 async def evaluate_and_save_report(

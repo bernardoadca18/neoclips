@@ -28,7 +28,6 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from app.clients.media_indexer_client import (
-    MediaIndexerAPIError,
     MediaIndexerClient,
     TranscriptSegmentOut,
 )

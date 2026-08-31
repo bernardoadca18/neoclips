@@ -1,5 +1,6 @@
 """NeoClips domain entities."""
 
+import typing
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -322,7 +323,7 @@ class DiscoveryWindow(Base, UUIDPrimaryKey, TimestampMixin):
     segment_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     status: Mapped[str] = mapped_column(String(50), nullable=False, server_default="pending")
     llm_response_raw: Mapped[str | None] = mapped_column(Text, nullable=True)
-    llm_response_parsed: Mapped[dict | None] = mapped_column(Text, nullable=True)  # JSON stored as text
+    llm_response_parsed: Mapped[dict[str, typing.Any] | None] = mapped_column(Text, nullable=True)  # JSON stored as text
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -395,7 +396,7 @@ class ClipCandidate(Base, UUIDPrimaryKey, TimestampMixin):
     topic_relevance: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     score_v1: Mapped[float | None] = mapped_column(Float, nullable=True)  # Deterministic score
-    score_v1_components: Mapped[dict | None] = mapped_column(Text, nullable=True)  # JSON breakdown
+    score_v1_components: Mapped[dict[str, typing.Any] | None] = mapped_column(Text, nullable=True)  # JSON breakdown
     candidate_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)  # SHA-256
     discovery_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_duplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
