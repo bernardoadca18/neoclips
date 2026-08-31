@@ -101,40 +101,37 @@ async def _fetch_window_segments_paginated(
     offset = 0
 
     while True:
-        # Fetch page of segments
-        segments = await client.get_transcript_segments(
+        # Fetch page of segments - returns TranscriptSegmentPage
+        page = await client.get_transcript_segments(
             transcription_id=transcription_id,
             offset=offset,
             limit=SEGMENT_PAGE_SIZE,
         )
 
-        if not segments:
+        # Check if page has items (TranscriptSegmentPage has .items, not truthy check)
+        if not page.items:
             break
 
         # Filter to window time range
-        for seg in segments:
+        for seg in page.items:
             # Segment overlaps window if it starts before window ends AND ends after window starts
             if seg.start_seconds < window_end and seg.end_seconds > window_start:
                 all_segments.append(seg)
-            # Early exit: if segment starts after window, we've passed the window
-            elif seg.start_seconds >= window_end:
-                # Don't break - there might be gaps, continue to next page
-                pass
 
-        offset += len(segments)
+        offset += len(page.items)
 
         # If we got less than page size, we've reached the end
-        if len(segments) < SEGMENT_PAGE_SIZE:
+        if len(page.items) < SEGMENT_PAGE_SIZE:
             break
 
         # Optimization: if last segment is past window, we can stop
         # Check if we've already collected all window segments
         # (last collected segment ends before current page start)
         if (
-            segments
-            and segments[-1].start_seconds >= window_end
+            page.items
+            and page.items[-1].start_seconds >= window_end
             and all_segments
-            and all_segments[-1].end_seconds <= segments[0].start_seconds
+            and all_segments[-1].end_seconds <= page.items[0].start_seconds
         ):
             break
 
@@ -357,14 +354,17 @@ async def _process_window(window_id: UUID, run_id: UUID) -> dict:
                     )
                     session.add(candidate)
 
-                    try:
-                        await session.flush()
-                        candidates_created += 1
-                    except IntegrityError:
-                        # Duplicate fingerprint - another concurrent task created it
-                        await session.rollback()
-                        logger.debug(f"Duplicate candidate fingerprint {fingerprint[:8]}, skipping")
-                        continue
+                    # Use nested transaction (savepoint) to isolate candidate insert
+                    # This prevents rollback from erasing prior candidates on duplicate
+                    async with session.begin_nested():
+                        try:
+                            await session.flush()
+                            candidates_created += 1
+                        except IntegrityError:
+                            # Duplicate fingerprint - another concurrent task created it
+                            # Savepoint rollback only affects this candidate, not prior ones
+                            logger.debug(f"Duplicate candidate fingerprint {fingerprint[:8]}, skipping")
+                            continue
 
                 except CanonicalizationError as e:
                     logger.warning(f"Canonicalization failed: {e}")

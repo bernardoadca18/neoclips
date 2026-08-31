@@ -15,7 +15,7 @@ celery_app = Celery(
     "neoclips",
     broker=str(settings.redis_url),
     backend=str(settings.redis_url),
-    include=["app.tasks"],
+    include=["app.tasks", "app.tasks.discovery_tasks"],
 )
 
 # Celery configuration
@@ -56,19 +56,29 @@ celery_app.conf.update(
 @worker_ready.connect  # type: ignore[untyped-decorator]
 def on_worker_ready(**kwargs: object) -> None:
     """
-    Resume incomplete sources at worker startup.
+    Resume incomplete sources and discovery runs at worker startup.
 
-    This recovers from worker crashes by restarting polling tasks
-    for sources stuck in non-terminal states (ingesting, transcribing).
+    This recovers from worker crashes by:
+    1. Restarting polling tasks for sources stuck in non-terminal states (ingesting, transcribing)
+    2. Recovering stale discovery runs and windows
     """
     from app.tasks import resume_incomplete_sources
+    from app.tasks.discovery_tasks import recover_stale_runs
 
     logger.info("worker_startup_recovery_started")
     try:
+        # Stage 2 recovery: Media Indexer polling
         resumed_count = resume_incomplete_sources()
-        logger.info("worker_startup_recovery_complete", extra={"resumed_count": resumed_count})
+        logger.info("stage2_recovery_complete", extra={"resumed_count": resumed_count})
     except Exception as e:
-        logger.error("worker_startup_recovery_failed", extra={"error": str(e)})
+        logger.error("stage2_recovery_failed", extra={"error": str(e)})
+
+    try:
+        # Stage 3 recovery: Discovery runs
+        recovery_stats = recover_stale_runs()
+        logger.info("stage3_recovery_complete", extra={"recovery_stats": recovery_stats})
+    except Exception as e:
+        logger.error("stage3_recovery_failed", extra={"error": str(e)})
 
 
 def get_celery_app() -> Celery:
