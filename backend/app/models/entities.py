@@ -217,6 +217,8 @@ class DiscoveryRun(Base, UUIDPrimaryKey, TimestampMixin):
 
     Each workflow can have multiple discovery runs (e.g., after reranking).
     A run processes transcript windows and produces clip candidates.
+
+    Durable orchestration: runs can be recovered and resumed after failures.
     """
 
     __tablename__ = "discovery_runs"
@@ -229,16 +231,33 @@ class DiscoveryRun(Base, UUIDPrimaryKey, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("clip_sources.id", ondelete="SET NULL"), nullable=True
     )
     transcription_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    strategy_id: Mapped[str | None] = mapped_column(String(100), nullable=True)  # Hash of config
-    prompt_id: Mapped[str | None] = mapped_column(String(100), nullable=True)  # Hash of prompt
-    config_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON config snapshot
+
+    # Idempotency and fingerprinting
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)  # SHA-256
+
+    # Strategy and prompt versioning
+    strategy_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    strategy_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    prompt_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    prompt_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)  # SHA-256
+
+    # Configuration snapshot (JSON)
+    config_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     status: Mapped[str] = mapped_column(String(50), nullable=False, server_default="pending")
     profile: Mapped[str] = mapped_column(String(50), nullable=False, server_default="transcript_only")
     llm_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     llm_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Progress tracking
     total_windows: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     processed_windows: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    completed_windows: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    failed_windows: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     total_candidates: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -254,7 +273,7 @@ class DiscoveryRun(Base, UUIDPrimaryKey, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'running', 'completed', 'failed')",
+            "status IN ('pending', 'running', 'completed', 'completed_with_errors', 'failed')",
             name="ck_discovery_run_status",
         ),
         CheckConstraint(
@@ -268,6 +287,14 @@ class DiscoveryRun(Base, UUIDPrimaryKey, TimestampMixin):
         CheckConstraint(
             "processed_windows >= 0",
             name="ck_discovery_run_processed_windows",
+        ),
+        CheckConstraint(
+            "completed_windows >= 0",
+            name="ck_discovery_run_completed_windows",
+        ),
+        CheckConstraint(
+            "failed_windows >= 0",
+            name="ck_discovery_run_failed_windows",
         ),
         CheckConstraint(
             "total_candidates >= 0",
@@ -298,6 +325,8 @@ class DiscoveryWindow(Base, UUIDPrimaryKey, TimestampMixin):
     llm_response_parsed: Mapped[dict | None] = mapped_column(Text, nullable=True)  # JSON stored as text
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
     # Relationships
     run: Mapped["DiscoveryRun"] = relationship("DiscoveryRun", back_populates="windows")
@@ -367,8 +396,14 @@ class ClipCandidate(Base, UUIDPrimaryKey, TimestampMixin):
 
     score_v1: Mapped[float | None] = mapped_column(Float, nullable=True)  # Deterministic score
     score_v1_components: Mapped[dict | None] = mapped_column(Text, nullable=True)  # JSON breakdown
+    candidate_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)  # SHA-256
+    discovery_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_duplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
-    duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("clip_candidates.id", ondelete="SET NULL"),
+        nullable=True
+    )
     selected: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     selection_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
@@ -399,7 +434,7 @@ class ClipCandidate(Base, UUIDPrimaryKey, TimestampMixin):
         ),
         # Idempotency: unique candidate fingerprint within a run
         UniqueConstraint(
-            "run_id", "canonical_start_seconds", "canonical_end_seconds",
-            name="uq_clip_candidate_fingerprint"
+            "run_id", "candidate_fingerprint",
+            name="uq_clip_candidates_fingerprint"
         ),
     )

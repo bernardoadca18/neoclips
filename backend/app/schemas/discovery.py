@@ -50,7 +50,11 @@ class DiscoveryRunRead(BaseModel):
     llm_provider: str | None
     total_windows: int
     processed_windows: int
+    completed_windows: int
+    failed_windows: int
     total_candidates: int
+    idempotency_key: str | None
+    request_fingerprint: str | None
     error_message: str | None
     started_at: datetime | None
     completed_at: datetime | None
@@ -105,8 +109,10 @@ class DiscoveryWindowRead(BaseModel):
     end_seconds: float
     segment_count: int
     status: str
+    attempt_count: int
     error_message: str | None
     processed_at: datetime | None
+    processing_started_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -178,8 +184,15 @@ class ClipCandidateRead(BaseModel):
     summary: str | None
     hook_type: str | None
     hook_description: str | None
+    hook_strength: float | None
+    standalone_clarity: float | None
+    narrative_completeness: float | None
+    emotional_intensity: float | None
+    topic_relevance: float | None
     score_v1: float | None
     score_v1_components: dict | None
+    candidate_fingerprint: str | None
+    discovery_rank: int | None
     is_duplicate: bool
     duplicate_of_id: UUID | None
     selected: bool
