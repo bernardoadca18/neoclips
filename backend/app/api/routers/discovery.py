@@ -3,10 +3,12 @@
 import hashlib
 import logging
 from datetime import UTC, datetime
+from math import ceil
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.media_indexer_client import MediaIndexerClient
@@ -32,16 +34,21 @@ from app.schemas.discovery import (
     DiscoveryRunUpdate,
     DiscoveryWindowRead,
 )
-from app.services.transcript_window_builder import TranscriptWindowBuilder, WindowConfig
+from app.services.clip_workflow_service import ClipWorkflowService
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Window configuration
+WINDOW_DURATION_SECONDS = 300.0
+WINDOW_OVERLAP_SECONDS = 60.0
+
 
 router = APIRouter(prefix="/v1/discovery", tags=["discovery"])
 
 
 @router.post(
-    "/discover",
+    "/workflows/{workflow_id}/discover",
     response_model=DiscoveryRunRead,
     status_code=status.HTTP_201_CREATED,
     summary="Start clip discovery for a workflow",
@@ -56,26 +63,18 @@ async def start_discovery(
     Start clip discovery for a workflow.
 
     This endpoint creates a DiscoveryRun synchronously with idempotency support,
-    creates discovery windows, and dispatches one-window-per-task processing.
+    creates discovery windows based on transcription duration, and dispatches
+    the first window processing task.
 
     Idempotency:
-    - If Idempotency-Key header is provided and a run exists with that key,
-      returns the existing run (200) instead of creating a new one.
+    - If Idempotency-Key header is provided and a run exists with that key:
+      - Same config (fingerprint match): returns existing run (200)
+      - Different config (fingerprint mismatch): returns 409 Conflict
     - Uses unique constraint on idempotency_key to prevent duplicates.
 
     Returns:
         DiscoveryRun with status 'running' and window counts populated.
     """
-    # Check idempotency - return existing run if found
-    if idempotency_key:
-        result = await session.execute(
-            select(DiscoveryRun).where(DiscoveryRun.idempotency_key == idempotency_key)
-        )
-        existing_run = result.scalar_one_or_none()
-        if existing_run:
-            logger.info(f"Returning existing discovery run for idempotency key {idempotency_key[:8]}...")
-            return existing_run
-
     # Get workflow
     result = await session.execute(
         select(ClipWorkflow).where(ClipWorkflow.id == workflow_id)
@@ -112,11 +111,7 @@ async def start_discovery(
             detail="Source has no transcription_id",
         )
 
-    # Compute request fingerprint from source + workflow state
-    fingerprint_data = f"{source.id}:{source.transcription_id}:{source.source_sha256 or ''}"
-    request_fingerprint = hashlib.sha256(fingerprint_data.encode()).hexdigest()
-
-    # Get transcription from Media Indexer
+    # Get transcription from Media Indexer (just metadata, not segments)
     client = MediaIndexerClient(
         base_url=settings.media_indexer_base_url,
         timeout_seconds=settings.media_indexer_timeout_seconds,
@@ -131,26 +126,55 @@ async def start_discovery(
             detail=f"Failed to get transcription from Media Indexer: {e}",
         )
 
-    # Fetch segments to build windows
-    try:
-        segments = await client.get_transcript_segments(
-            transcription_id=transcription.id,
-            offset=0,
-            limit=100000,  # Large limit for window building
-        )
-    except Exception as e:
-        logger.error(f"Failed to get transcript segments: {e}")
+    if not transcription.duration_seconds or transcription.duration_seconds <= 0:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to get transcript segments: {e}",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Transcription has no valid duration",
         )
 
-    # Build windows
-    window_builder = TranscriptWindowBuilder(WindowConfig(
-        window_duration_seconds=300.0,
-        overlap_seconds=60.0,
-    ))
-    windows = window_builder.build(segments)
+    # Compute canonical request fingerprint from source + transcription state
+    # This ensures same source always gets same fingerprint
+    fingerprint_data = f"{source.id}:{source.transcription_id}:{source.source_sha256 or ''}"
+    request_fingerprint = hashlib.sha256(fingerprint_data.encode()).hexdigest()
+
+    # Check idempotency - handle existing runs
+    if idempotency_key:
+        result = await session.execute(
+            select(DiscoveryRun).where(DiscoveryRun.idempotency_key == idempotency_key)
+        )
+        existing_run = result.scalar_one_or_none()
+        if existing_run:
+            # Check if config matches (same fingerprint)
+            if existing_run.request_fingerprint == request_fingerprint:
+                # Same key, same config - return existing run
+                logger.info(f"Returning existing discovery run for idempotency key {idempotency_key[:8]}...")
+                return existing_run
+            else:
+                # Same key, different config - 409 Conflict
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Idempotency key already used with different configuration",
+                )
+
+    # Build windows by duration (no segment loading)
+    duration = transcription.duration_seconds
+    effective_window_size = WINDOW_DURATION_SECONDS - WINDOW_OVERLAP_SECONDS
+    window_count = max(1, ceil((duration - WINDOW_OVERLAP_SECONDS) / effective_window_size))
+
+    windows_to_create = []
+    for i in range(window_count):
+        start = i * effective_window_size
+        end = min(start + WINDOW_DURATION_SECONDS, duration)
+
+        windows_to_create.append({
+            "window_index": i,
+            "start_seconds": start,
+            "end_seconds": end,
+        })
+
+        # Last window reached the end
+        if end >= duration:
+            break
 
     # Create DiscoveryRun
     run = DiscoveryRun(
@@ -168,7 +192,7 @@ async def start_discovery(
         prompt_version="1.0.0",
         llm_model="gpt-4o",
         llm_provider="openai",
-        total_windows=len(windows),
+        total_windows=len(windows_to_create),
         processed_windows=0,
         completed_windows=0,
         failed_windows=0,
@@ -178,18 +202,38 @@ async def start_discovery(
         updated_at=datetime.now(UTC),
     )
     session.add(run)
-    await session.flush()
+
+    # Try to flush - handle IntegrityError for duplicate idempotency_key
+    try:
+        await session.flush()
+    except IntegrityError:
+        # Race condition: another request created the run
+        await session.rollback()
+        if idempotency_key:
+            result = await session.execute(
+                select(DiscoveryRun).where(DiscoveryRun.idempotency_key == idempotency_key)
+            )
+            existing_run = result.scalar_one_or_none()
+            if existing_run:
+                if existing_run.request_fingerprint == request_fingerprint:
+                    return existing_run
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Idempotency key already used with different configuration",
+                    )
+        raise
 
     # Create DiscoveryWindows
     db_windows = []
-    for window in windows:
+    for window_data in windows_to_create:
         db_window = DiscoveryWindow(
             id=uuid4(),
             run_id=run.id,
-            window_index=window.window_index,
-            start_seconds=window.start_seconds,
-            end_seconds=window.end_seconds,
-            segment_count=window.segment_count,
+            window_index=window_data["window_index"],
+            start_seconds=window_data["start_seconds"],
+            end_seconds=window_data["end_seconds"],
+            segment_count=0,  # Will be populated when processing
             status="pending",
             attempt_count=0,
             created_at=datetime.now(UTC),
@@ -198,20 +242,20 @@ async def start_discovery(
         db_windows.append(db_window)
         session.add(db_window)
 
-    # Update workflow state
-    workflow.current_phase = "discovering"
-    workflow.updated_at = datetime.now(UTC)
+    # Update workflow state using service
+    workflow_service = ClipWorkflowService(session)
+    await workflow_service.transition_status(workflow.id, "discovering")
 
-    # Commit run and windows before dispatching tasks
+    # Commit run and windows before dispatching task
     await session.commit()
 
-    # Dispatch one-window-per-task
-    from app.tasks.discovery_tasks import process_window
+    # Bootstrap: schedule ONLY the first pending window
+    if db_windows:
+        from app.tasks.discovery_tasks import process_window
 
-    for db_window in db_windows:
-        process_window.delay(str(db_window.id), str(run.id))
-
-    logger.info(f"Created discovery run {run.id} with {len(windows)} windows")
+        first_window = db_windows[0]
+        process_window.delay(str(first_window.id), str(run.id))
+        logger.info(f"Created discovery run {run.id} with {len(db_windows)} windows, dispatched first window {first_window.id}")
 
     await session.refresh(run)
     return run
@@ -221,57 +265,42 @@ async def start_discovery(
     "/runs",
     response_model=DiscoveryRunRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Create a discovery run",
-    description="Create a new clip discovery run for a workflow.",
+    deprecated=True,
+    summary="Create a discovery run (deprecated)",
+    description="Use POST /workflows/{workflow_id}/discover instead.",
 )
 async def create_discovery_run(
-    data: DiscoveryRunCreate,
+    run_create: DiscoveryRunCreate,
     session: AsyncSession = Depends(get_session),
 ) -> DiscoveryRun:
-    """Create a new discovery run."""
-    # Verify workflow exists
-    result = await session.execute(
-        select(ClipWorkflow).where(ClipWorkflow.id == data.workflow_id)
-    )
-    workflow = result.scalar_one_or_none()
+    """Create a discovery run. Deprecated - use /workflows/{workflow_id}/discover."""
+    run_repository = DiscoveryRunRepository(session)
 
-    if not workflow:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow {data.workflow_id} not found",
-        )
-
-    # Create run
     run = DiscoveryRun(
-        workflow_id=data.workflow_id,
+        workflow_id=run_create.workflow_id,
         status="pending",
-        profile=data.profile,
+        profile=run_create.profile,
         total_windows=0,
         processed_windows=0,
         total_candidates=0,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
     )
-    session.add(run)
-    await session.commit()
-    await session.refresh(run)
-
-    return run
+    return await run_repository.create(run)
 
 
 @router.get(
     "/runs/{run_id}",
     response_model=DiscoveryRunRead,
     summary="Get a discovery run",
-    description="Get details of a specific discovery run.",
 )
 async def get_discovery_run(
     run_id: UUID,
     session: AsyncSession = Depends(get_session),
 ) -> DiscoveryRun:
     """Get a discovery run by ID."""
-    repository = DiscoveryRunRepository(session)
-    run = await repository.get(run_id)
+    run_repository = DiscoveryRunRepository(session)
+    run = await run_repository.get_by_id(run_id)
 
     if not run:
         raise HTTPException(
@@ -286,37 +315,36 @@ async def get_discovery_run(
     "/runs",
     response_model=list[DiscoveryRunRead],
     summary="List discovery runs",
-    description="List discovery runs, optionally filtered by workflow.",
 )
 async def list_discovery_runs(
     workflow_id: UUID | None = Query(None, description="Filter by workflow ID"),
-    limit: int = Query(20, ge=1, le=100),
+    status: str | None = Query(None, description="Filter by status"),
+    limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
 ) -> list[DiscoveryRun]:
-    """List discovery runs."""
-    repository = DiscoveryRunRepository(session)
+    """List discovery runs with optional filtering."""
+    run_repository = DiscoveryRunRepository(session)
 
     if workflow_id:
-        return await repository.get_by_workflow_id(workflow_id)
+        return await run_repository.get_by_workflow_id(workflow_id)
 
-    return await repository.get_all(limit=limit, offset=offset)
+    return await run_repository.list(limit=limit, offset=offset)
 
 
 @router.patch(
     "/runs/{run_id}",
     response_model=DiscoveryRunRead,
     summary="Update a discovery run",
-    description="Update discovery run status or metadata.",
 )
 async def update_discovery_run(
     run_id: UUID,
-    data: DiscoveryRunUpdate,
+    run_update: DiscoveryRunUpdate,
     session: AsyncSession = Depends(get_session),
 ) -> DiscoveryRun:
     """Update a discovery run."""
-    repository = DiscoveryRunRepository(session)
-    run = await repository.get(run_id)
+    run_repository = DiscoveryRunRepository(session)
+    run = await run_repository.get_by_id(run_id)
 
     if not run:
         raise HTTPException(
@@ -324,42 +352,40 @@ async def update_discovery_run(
             detail=f"Discovery run {run_id} not found",
         )
 
-    update_data = data.model_dump(exclude_unset=True)
-    run = await repository.update(run, update_data)
-    await session.commit()
-    await session.refresh(run)
+    update_data = run_update.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(run, field, value)
 
-    return run
+    run.updated_at = datetime.now(UTC)
+    return await run_repository.update(run)
 
 
 @router.get(
     "/runs/{run_id}/windows",
     response_model=list[DiscoveryWindowRead],
-    summary="List discovery windows",
-    description="List all windows for a discovery run.",
+    summary="List windows for a discovery run",
 )
 async def list_discovery_windows(
     run_id: UUID,
     session: AsyncSession = Depends(get_session),
 ) -> list[DiscoveryWindow]:
-    """List windows for a discovery run."""
-    repository = DiscoveryWindowRepository(session)
-    return await repository.get_by_run_id(run_id)
+    """List all windows for a discovery run."""
+    window_repository = DiscoveryWindowRepository(session)
+    return await window_repository.get_by_run_id(run_id)
 
 
 @router.get(
     "/windows/{window_id}",
     response_model=DiscoveryWindowRead,
     summary="Get a discovery window",
-    description="Get details of a specific discovery window.",
 )
 async def get_discovery_window(
     window_id: UUID,
     session: AsyncSession = Depends(get_session),
 ) -> DiscoveryWindow:
     """Get a discovery window by ID."""
-    repository = DiscoveryWindowRepository(session)
-    window = await repository.get(window_id)
+    window_repository = DiscoveryWindowRepository(session)
+    window = await window_repository.get_by_id(window_id)
 
     if not window:
         raise HTTPException(
@@ -373,36 +399,29 @@ async def get_discovery_window(
 @router.get(
     "/runs/{run_id}/candidates",
     response_model=list[ClipCandidateRead],
-    summary="List clip candidates",
-    description="List all candidates for a discovery run.",
+    summary="List candidates for a discovery run",
 )
-async def list_clip_candidates(
+async def list_discovery_candidates(
     run_id: UUID,
-    exclude_duplicates: bool = Query(False, description="Exclude duplicate candidates"),
     session: AsyncSession = Depends(get_session),
 ) -> list[ClipCandidate]:
-    """List candidates for a discovery run."""
-    repository = ClipCandidateRepository(session)
-
-    if exclude_duplicates:
-        return await repository.get_non_duplicate_by_run_id(run_id)
-
-    return await repository.get_by_run_id(run_id)
+    """List all candidates for a discovery run."""
+    candidate_repository = ClipCandidateRepository(session)
+    return await candidate_repository.get_by_run_id(run_id)
 
 
 @router.get(
     "/candidates/{candidate_id}",
     response_model=ClipCandidateRead,
     summary="Get a clip candidate",
-    description="Get details of a specific clip candidate.",
 )
 async def get_clip_candidate(
     candidate_id: UUID,
     session: AsyncSession = Depends(get_session),
 ) -> ClipCandidate:
     """Get a clip candidate by ID."""
-    repository = ClipCandidateRepository(session)
-    candidate = await repository.get(candidate_id)
+    candidate_repository = ClipCandidateRepository(session)
+    candidate = await candidate_repository.get_by_id(candidate_id)
 
     if not candidate:
         raise HTTPException(
@@ -417,16 +436,15 @@ async def get_clip_candidate(
     "/candidates/{candidate_id}",
     response_model=ClipCandidateRead,
     summary="Update a clip candidate",
-    description="Update candidate selection status or score.",
 )
 async def update_clip_candidate(
     candidate_id: UUID,
-    data: ClipCandidateUpdate,
+    candidate_update: ClipCandidateUpdate,
     session: AsyncSession = Depends(get_session),
 ) -> ClipCandidate:
     """Update a clip candidate."""
-    repository = ClipCandidateRepository(session)
-    candidate = await repository.get(candidate_id)
+    candidate_repository = ClipCandidateRepository(session)
+    candidate = await candidate_repository.get_by_id(candidate_id)
 
     if not candidate:
         raise HTTPException(
@@ -434,47 +452,9 @@ async def update_clip_candidate(
             detail=f"Clip candidate {candidate_id} not found",
         )
 
-    update_data = data.model_dump(exclude_unset=True)
-    candidate = await repository.update(candidate, update_data)
-    await session.commit()
-    await session.refresh(candidate)
+    update_data = candidate_update.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(candidate, field, value)
 
-    return candidate
-
-
-@router.post(
-    "/candidates/{candidate_id}/select",
-    response_model=ClipCandidateRead,
-    summary="Select a clip candidate",
-    description="Mark a candidate as selected for rendering.",
-)
-async def select_clip_candidate(
-    candidate_id: UUID,
-    rank: int | None = Query(None, ge=1, description="Selection rank"),
-    session: AsyncSession = Depends(get_session),
-) -> ClipCandidate:
-    """Select a clip candidate for rendering."""
-    repository = ClipCandidateRepository(session)
-    candidate = await repository.get(candidate_id)
-
-    if not candidate:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Clip candidate {candidate_id} not found",
-        )
-
-    if candidate.is_duplicate:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot select a duplicate candidate",
-        )
-
-    candidate.selected = True
-    if rank:
-        candidate.selection_rank = rank
     candidate.updated_at = datetime.now(UTC)
-
-    await session.commit()
-    await session.refresh(candidate)
-
-    return candidate
+    return await candidate_repository.update(candidate)
