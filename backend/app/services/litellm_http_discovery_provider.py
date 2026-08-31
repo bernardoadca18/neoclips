@@ -53,14 +53,14 @@ class LiteLLMHTTPDiscoveryProvider(ClipDiscoveryProviderProtocol):
 
     def __init__(
         self,
-        model: str = "openai/gpt-4o-mini",
+        model: str | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
         max_candidates_per_window: int = 10,
         temperature: float = 0.3,
         timeout_seconds: int | None = None,
     ) -> None:
-        self.model = model
+        self.model = model or settings.litellm_model
         self.base_url = (base_url or settings.litellm_base_url).rstrip("/")
         self.api_key = api_key or settings.litellm_api_key
         self.max_candidates_per_window = max_candidates_per_window

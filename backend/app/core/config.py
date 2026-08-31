@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     litellm_base_url: str = Field(default="http://localhost:4000")
     litellm_api_key: str | None = None
     litellm_timeout_seconds: int = 60
+    litellm_model: str = Field(default="openai/gpt-4o-mini", description="LLM model for clip discovery (format: provider/model)")
 
     @field_validator("log_level")
     @classmethod

@@ -51,8 +51,9 @@ router = APIRouter(prefix="/v1/discovery", tags=["discovery"])
     "/workflows/{workflow_id}/discover",
     response_model=DiscoveryRunRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Start clip discovery for a workflow",
-    description="Create a discovery run with idempotency and dispatch window processing tasks.",
+    deprecated=True,
+    summary="Start clip discovery for a workflow (deprecated)",
+    description="DEPRECATED: Use POST /v1/workflows/{workflow_id}/discover instead. This endpoint will be removed in a future version.",
 )
 async def start_discovery(
     workflow_id: UUID,
@@ -132,9 +133,28 @@ async def start_discovery(
             detail="Transcription has no valid duration",
         )
 
-    # Compute canonical request fingerprint from source + transcription state
-    # This ensures same source always gets same fingerprint
-    fingerprint_data = f"{source.id}:{source.transcription_id}:{source.source_sha256 or ''}"
+    # Get LLM model from settings (matches LiteLLMHTTPDiscoveryProvider default)
+    # Format: "provider/model" e.g., "openai/gpt-4o-mini"
+    litellm_model = settings.litellm_model
+    if "/" in litellm_model:
+        llm_provider, llm_model_name = litellm_model.split("/", 1)
+    else:
+        llm_provider = "openai"
+        llm_model_name = litellm_model
+
+    # Discovery strategy configuration (hardcoded for MVP, could be parameterized later)
+    strategy_id = "transcript_v1"
+    strategy_version = "1.0.0"
+    prompt_id = "clip_discovery_v1"
+    prompt_version = "1.0.0"
+
+    # Compute canonical request fingerprint from source + transcription + discovery config
+    # This captures the full execution identity so same source+config produces same fingerprint
+    fingerprint_data = (
+        f"{source.id}:{source.transcription_id}:{source.source_sha256 or ''}"
+        f":{strategy_id}:{strategy_version}:{prompt_id}:{prompt_version}"
+        f":{llm_provider}:{llm_model_name}"
+    )
     request_fingerprint = hashlib.sha256(fingerprint_data.encode()).hexdigest()
 
     # Check idempotency - handle existing runs
@@ -176,7 +196,7 @@ async def start_discovery(
         if end >= duration:
             break
 
-    # Create DiscoveryRun
+    # Create DiscoveryRun (using LLM model extracted earlier for fingerprint)
     run = DiscoveryRun(
         id=uuid4(),
         workflow_id=workflow_id,
@@ -186,12 +206,12 @@ async def start_discovery(
         request_fingerprint=request_fingerprint,
         status="running",
         profile="transcript_only",
-        strategy_id="transcript_v1",
-        strategy_version="1.0.0",
-        prompt_id="clip_discovery_v1",
-        prompt_version="1.0.0",
-        llm_model="gpt-4o",
-        llm_provider="openai",
+        strategy_id=strategy_id,
+        strategy_version=strategy_version,
+        prompt_id=prompt_id,
+        prompt_version=prompt_version,
+        llm_model=llm_model_name,
+        llm_provider=llm_provider,
         total_windows=len(windows_to_create),
         processed_windows=0,
         completed_windows=0,
