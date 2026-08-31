@@ -22,7 +22,9 @@ __all__ = [
 class TranscriptProvider(Protocol):
     """Protocol for transcript retrieval.
 
-    Implementations must provide transcript segments for a given source.
+    Implementations must provide transcript segments for a given transcription.
+    Note: The parameter is transcription_id (from Media Indexer), NOT source_id.
+
     This abstraction allows:
     - Media Indexer HTTP client (production)
     - Mock providers (testing)
@@ -31,12 +33,12 @@ class TranscriptProvider(Protocol):
 
     async def get_transcript(
         self,
-        source_id: str,
+        transcription_id: str,
     ) -> list[TranscriptSegmentOut]:
-        """Get all transcript segments for a source.
+        """Get all transcript segments for a transcription.
 
         Args:
-            source_id: The source identifier
+            transcription_id: The transcription UUID from Media Indexer
 
         Returns:
             List of all transcript segments, sorted by start time
@@ -49,14 +51,14 @@ class TranscriptProvider(Protocol):
 
     async def get_transcript_for_time_range(
         self,
-        source_id: str,
+        transcription_id: str,
         start_seconds: float,
         end_seconds: float,
     ) -> list[TranscriptSegmentOut]:
         """Get transcript segments for a specific time range.
 
         Args:
-            source_id: The source identifier
+            transcription_id: The transcription UUID
             start_seconds: Start of time range
             end_seconds: End of time range
 

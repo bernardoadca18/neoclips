@@ -194,7 +194,7 @@ class ClipCandidateRead(BaseModel):
 
 
 class LLMClipSuggestion(BaseModel):
-    """A single clip suggestion from the LLM."""
+    """A single clip suggestion from the LLM with semantic features."""
 
     start_segment_id: UUID = Field(..., description="ID of the starting transcript segment")
     end_segment_id: UUID = Field(..., description="ID of the ending transcript segment")
@@ -202,6 +202,40 @@ class LLMClipSuggestion(BaseModel):
     summary: str = Field(..., min_length=1)
     hook_type: str = Field(..., description="Type of hook (e.g., 'question', 'statement', 'story')")
     hook_description: str = Field(..., description="Why this makes a good clip")
+
+    # Semantic features for scoring (0.0 to 1.0 scale)
+    hook_strength: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Strength of the opening hook (0=weak, 1=very strong)"
+    )
+    standalone_clarity: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="How well the clip works standalone without context"
+    )
+    narrative_completeness: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Whether the clip has a complete narrative arc"
+    )
+    emotional_intensity: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Emotional intensity of the clip content"
+    )
+    topic_relevance: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Relevance to main topic of the source content"
+    )
+
+    model_config = {"extra": "forbid"}
 
 
 class LLMDiscoveryResponse(BaseModel):

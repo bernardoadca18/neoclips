@@ -1,17 +1,21 @@
-"""ClipDiscoveryProvider using LiteLLM for clip discovery.
+"""ClipDiscoveryProvider using LiteLLM HTTP proxy for clip discovery.
 
-Provides LLM-based clip discovery with strict JSON validation.
+Provides LLM-based clip discovery with strict JSON validation via HTTP.
 The LLM acts as a semantic judge, returning segment IDs that are
 later canonicalized to trusted timestamps.
 """
 
 import json
 import logging
-from typing import Any
 
+import httpx
 from pydantic import ValidationError
 
-from app.schemas.discovery import LLMClipSuggestion, LLMDiscoveryResponse
+from app.core.config import settings
+from app.schemas.discovery import LLMDiscoveryResponse
+from app.services.clip_discovery_protocol import (
+    ClipDiscoveryProvider as ClipDiscoveryProviderProtocol,
+)
 from app.services.transcript_window_builder import TranscriptWindow
 
 logger = logging.getLogger(__name__)
@@ -31,16 +35,18 @@ class LLMResponseValidationError(ClipDiscoveryProviderError):
         self.raw_response = raw_response
 
 
-class ClipDiscoveryProvider:
+class LiteLLMHTTPDiscoveryProvider(ClipDiscoveryProviderProtocol):
     """
-    LLM-based clip discovery provider using LiteLLM.
+    LLM-based clip discovery provider using LiteLLM HTTP proxy.
 
-    Sends transcript windows to LLM for clip candidate discovery.
+    Sends transcript windows to LLM for clip candidate discovery via HTTP.
     The LLM returns segment IDs (not timestamps) for clip boundaries.
     The CandidateCanonicalizer later resolves these to trusted timestamps.
 
     Configuration:
         - model: LLM model identifier (e.g., "openai/gpt-4o", "anthropic/claude-3-sonnet")
+        - base_url: LiteLLM proxy URL (default: from settings.litellm_base_url)
+        - api_key: API key for LiteLLM proxy (default: from settings.litellm_api_key)
         - max_candidates_per_window: Maximum candidates per window (default: 10)
         - temperature: Sampling temperature (default: 0.3 for consistency)
     """
@@ -48,12 +54,18 @@ class ClipDiscoveryProvider:
     def __init__(
         self,
         model: str = "openai/gpt-4o-mini",
+        base_url: str | None = None,
+        api_key: str | None = None,
         max_candidates_per_window: int = 10,
         temperature: float = 0.3,
+        timeout_seconds: int | None = None,
     ) -> None:
         self.model = model
+        self.base_url = (base_url or settings.litellm_base_url).rstrip("/")
+        self.api_key = api_key or settings.litellm_api_key
         self.max_candidates_per_window = max_candidates_per_window
         self.temperature = temperature
+        self.timeout_seconds = timeout_seconds or settings.litellm_timeout_seconds
 
     def _build_system_prompt(self) -> str:
         """Build the system prompt for clip discovery."""
@@ -79,6 +91,13 @@ HOOK TYPES:
 - emotional: Contains emotional resonance
 - humor: Contains comedic potential
 
+SEMANTIC FEATURES (rate each 0.0 to 1.0):
+- hook_strength: How strong is the opening hook? (0=weak, 1=very strong)
+- standalone_clarity: Can this clip be understood without context? (0=needs context, 1=fully standalone)
+- narrative_completeness: Does the clip have a complete arc? (0=incomplete, 1=complete story)
+- emotional_intensity: How emotionally engaging is the content? (0=neutral, 1=very intense)
+- topic_relevance: How relevant to the main topic? (0=tangent, 1=core topic)
+
 OUTPUT SCHEMA (STRICT):
 {
   "clips": [
@@ -88,7 +107,12 @@ OUTPUT SCHEMA (STRICT):
       "title": "Brief compelling title",
       "summary": "One sentence summary",
       "hook_type": "one of the hook types",
-      "hook_description": "Why this makes a good clip"
+      "hook_description": "Why this makes a good clip",
+      "hook_strength": 0.8,
+      "standalone_clarity": 0.9,
+      "narrative_completeness": 0.7,
+      "emotional_intensity": 0.5,
+      "topic_relevance": 0.9
     }
   ]
 }
@@ -123,38 +147,55 @@ Return JSON with clips array (max {self.max_candidates_per_window} clips)."""
             Tuple of (validated response, raw LLM response)
 
         Raises:
+            ClipDiscoveryProviderError: If HTTP request fails
             LLMResponseValidationError: If response cannot be parsed or validated
         """
-        try:
-            import litellm
-        except ImportError as e:
-            raise ClipDiscoveryProviderError(
-                "litellm not installed. Install with: pip install litellm"
-            ) from e
-
         messages = [
             {"role": "system", "content": self._build_system_prompt()},
             {"role": "user", "content": self._build_user_prompt(window)},
         ]
 
-        try:
-            response = await litellm.acompletion(
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=2000,
-            )
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": 2000,
+        }
 
-            raw_content = response.choices[0].message.content or ""
-            validated = self._validate_response(raw_content, window)
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
 
-            return validated, raw_content
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    json=payload,
+                    headers=headers,
+                )
+                response.raise_for_status()
 
-        except litellm.exceptions.APIError as e:
-            logger.error(f"LLM API error: {e}")
-            raise ClipDiscoveryProviderError(f"LLM API error: {e}") from e
+                data = response.json()
+                raw_content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-    def _validate_response(self, raw_content: str, window: TranscriptWindow | None = None) -> LLMDiscoveryResponse:
+                if not raw_content:
+                    raise ClipDiscoveryProviderError("Empty response from LLM")
+
+                validated = self._validate_response(raw_content, window)
+                return validated, raw_content
+
+            except httpx.HTTPStatusError as e:
+                logger.error(f"LiteLLM HTTP error: {e.response.status_code} - {e.response.text}")
+                raise ClipDiscoveryProviderError(
+                    f"LiteLLM HTTP error: {e.response.status_code}"
+                ) from e
+            except httpx.RequestError as e:
+                logger.error(f"LiteLLM request error: {e}")
+                raise ClipDiscoveryProviderError(f"LiteLLM request error: {e}") from e
+
+    def _validate_response(
+        self, raw_content: str, window: TranscriptWindow | None = None
+    ) -> LLMDiscoveryResponse:
         """
         Validate and parse LLM response.
 

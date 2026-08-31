@@ -3,7 +3,8 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, status
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
@@ -18,6 +19,110 @@ from app.services.clip_workflow_service import (
 )
 
 router = APIRouter(prefix="/v1/workflows", tags=["workflows"])
+
+
+class DiscoverRequest(BaseModel):
+    """Request body for triggering discovery."""
+
+    profile: str | None = Field(
+        default="default",
+        description="Discovery profile to use",
+    )
+    window_duration_seconds: float | None = Field(
+        default=300.0,
+        description="Duration of each discovery window in seconds",
+    )
+    overlap_seconds: float | None = Field(
+        default=60.0,
+        description="Overlap between windows in seconds",
+    )
+
+
+class DiscoverResponse(BaseModel):
+    """Response for discovery trigger."""
+
+    workflow_id: UUID
+    task_id: str | None = None
+    status: str
+    message: str
+
+    model_config = {"extra": "forbid"}
+
+
+@router.post(
+    "/{workflow_id}/discover",
+    response_model=DiscoverResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Trigger clip discovery for a workflow",
+    description="Start the discovery process for a workflow. Returns immediately with task ID.",
+)
+async def trigger_discovery(
+    workflow_id: UUID,
+    data: DiscoverRequest = Depends(),
+    session: AsyncSession = Depends(get_session),
+) -> DiscoverResponse:
+    """Trigger clip discovery for a workflow.
+
+    This endpoint validates the workflow is ready for discovery and
+    queues the discovery task. The actual discovery runs asynchronously.
+
+    The workflow's source must be in 'ready_for_discovery' status.
+
+    Returns 202 Accepted with the Celery task ID for tracking.
+    """
+    from sqlalchemy import select
+
+    from app.models.entities import ClipSource, ClipWorkflow
+
+    # Get workflow
+    result = await session.execute(
+        select(ClipWorkflow).where(ClipWorkflow.id == workflow_id)
+    )
+    workflow = result.scalar_one_or_none()
+
+    if not workflow:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow {workflow_id} not found",
+        )
+
+    # Get source
+    result = await session.execute(
+        select(ClipSource).where(ClipSource.id == workflow.source_id)
+    )
+    source = result.scalar_one_or_none()
+
+    if not source:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source for workflow {workflow_id} not found",
+        )
+
+    # Check source is ready
+    if source.status != "ready_for_discovery":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Source status is '{source.status}', must be 'ready_for_discovery'",
+        )
+
+    # Check source has transcription
+    if not source.transcription_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Source has no transcription_id",
+        )
+
+    # Queue the discovery task
+    from app.tasks.discovery_tasks import run_discovery
+
+    task = run_discovery.delay(str(workflow_id))
+
+    return DiscoverResponse(
+        workflow_id=workflow_id,
+        task_id=task.id,
+        status="queued",
+        message=f"Discovery task {task.id} queued for workflow {workflow_id}",
+    )
 
 
 def get_workflow_service(session: AsyncSession = Depends(get_session)) -> ClipWorkflowService:

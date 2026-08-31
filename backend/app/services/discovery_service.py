@@ -24,8 +24,11 @@ from app.repositories.discovery_repository import (
 )
 from app.services.candidate_canonicalizer import CandidateCanonicalizer, CanonicalizationError
 from app.services.candidate_deduplicator import CandidateDeduplicator, CandidateForDedup
-from app.services.clip_discovery_provider import ClipDiscoveryProvider, ClipDiscoveryProviderError
 from app.services.clip_scoring import calculate_clip_score_v1
+from app.services.litellm_http_discovery_provider import (
+    ClipDiscoveryProviderError,
+    LiteLLMHTTPDiscoveryProvider,
+)
 from app.services.transcript_window_builder import TranscriptWindowBuilder, WindowConfig
 
 logger = logging.getLogger(__name__)
@@ -58,7 +61,7 @@ class DiscoveryService:
     def __init__(
         self,
         session: AsyncSession,
-        discovery_provider: ClipDiscoveryProvider | None = None,
+        discovery_provider: LiteLLMHTTPDiscoveryProvider | None = None,
         window_config: WindowConfig | None = None,
         iou_threshold: float = 0.5,
     ) -> None:
@@ -66,7 +69,7 @@ class DiscoveryService:
         self.run_repository = DiscoveryRunRepository(session)
         self.window_repository = DiscoveryWindowRepository(session)
         self.candidate_repository = ClipCandidateRepository(session)
-        self.discovery_provider = discovery_provider or ClipDiscoveryProvider()
+        self.discovery_provider = discovery_provider or LiteLLMHTTPDiscoveryProvider()
         self.window_builder = TranscriptWindowBuilder(window_config)
         self.deduplicator = CandidateDeduplicator(iou_threshold)
 

@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # Video Composer (future stage)
     video_composer_url: str | None = None
 
+    # LiteLLM HTTP proxy
+    litellm_base_url: str = Field(default="http://localhost:4000")
+    litellm_api_key: str | None = None
+    litellm_timeout_seconds: int = 60
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -84,3 +89,7 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Get cached settings instance."""
     return Settings()
+
+
+# Singleton for convenient access
+settings = get_settings()

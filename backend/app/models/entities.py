@@ -357,6 +357,14 @@ class ClipCandidate(Base, UUIDPrimaryKey, TimestampMixin):
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     hook_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     hook_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Semantic features from LLM (0.0 to 1.0 scale)
+    hook_strength: Mapped[float | None] = mapped_column(Float, nullable=True)
+    standalone_clarity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    narrative_completeness: Mapped[float | None] = mapped_column(Float, nullable=True)
+    emotional_intensity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    topic_relevance: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     score_v1: Mapped[float | None] = mapped_column(Float, nullable=True)  # Deterministic score
     score_v1_components: Mapped[dict | None] = mapped_column(Text, nullable=True)  # JSON breakdown
     is_duplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
