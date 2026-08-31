@@ -45,7 +45,7 @@ class DiscoverResponse(BaseModel):
 @router.post(
     "/{workflow_id}/discover",
     response_model=DiscoverResponse,
-    status_code=status.HTTP_201_CREATED,
+    status_code=status.HTTP_202_ACCEPTED,
     summary="Start clip discovery for a workflow",
     description="Create a discovery run with idempotency and dispatch window processing tasks.",
 )
@@ -63,263 +63,71 @@ async def trigger_discovery(
 
     Idempotency:
     - If Idempotency-Key header is provided and a run exists with that key:
-      - Same config (fingerprint match): returns existing run (201)
+      - Same config (fingerprint match): returns existing run (202)
       - Different config (fingerprint mismatch): returns 409 Conflict
     - Uses unique constraint on idempotency_key to prevent duplicates.
 
     Returns:
         DiscoveryRun with status 'running' and window counts populated.
     """
-    import hashlib
     import logging
-    from datetime import UTC, datetime
-    from math import ceil
-    from uuid import uuid4
 
-    from sqlalchemy import select
-    from sqlalchemy.exc import IntegrityError
-
-    from app.clients.media_indexer_client import MediaIndexerClient
-    from app.core.config import get_settings
-    from app.models.entities import ClipSource, ClipWorkflow, DiscoveryRun, DiscoveryWindow
+    from app.services.discovery_bootstrap_service import (
+        DiscoveryBootstrapService,
+        IdempotencyConflictError,
+        SourceNotFoundError,
+        SourceNotReadyError,
+        TranscriptionNotFoundError,
+        WorkflowNotFoundError,
+    )
 
     logger = logging.getLogger(__name__)
-    settings = get_settings()
 
-    # Window configuration
-    WINDOW_DURATION_SECONDS = 300.0
-    WINDOW_OVERLAP_SECONDS = 60.0
-
-    # Get workflow
-    result = await session.execute(
-        select(ClipWorkflow).where(ClipWorkflow.id == workflow_id)
-    )
-    workflow = result.scalar_one_or_none()
-
-    if not workflow:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow {workflow_id} not found",
-        )
-
-    # Get source
-    result = await session.execute(
-        select(ClipSource).where(ClipSource.id == workflow.source_id)
-    )
-    source = result.scalar_one_or_none()
-
-    if not source:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Source for workflow {workflow_id} not found",
-        )
-
-    if source.status != "ready_for_discovery":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Source status is {source.status}, must be ready_for_discovery",
-        )
-
-    if not source.transcription_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Source has no transcription_id",
-        )
-
-    # Get transcription from Media Indexer (just metadata, not segments)
-    client = MediaIndexerClient(
-        base_url=settings.media_indexer_base_url,
-        timeout_seconds=settings.media_indexer_timeout_seconds,
-    )
+    service = DiscoveryBootstrapService(session)
 
     try:
-        transcription = await client.get_transcription(source.transcription_id)
-    except Exception as e:
-        logger.error(f"Failed to get transcription: {e}")
+        result = await service.bootstrap(
+            workflow_id=workflow_id,
+            idempotency_key=idempotency_key,
+        )
+    except WorkflowNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except SourceNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except SourceNotReadyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except TranscriptionNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to get transcription from Media Indexer: {e}",
+            detail=str(e),
         )
-
-    if not transcription.duration_seconds or transcription.duration_seconds <= 0:
+    except IdempotencyConflictError:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Transcription has no valid duration",
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency key already used with different configuration",
         )
 
-    # Get LLM model from settings (matches LiteLLMHTTPDiscoveryProvider default)
-    # Format: "provider/model" e.g., "openai/gpt-4o-mini"
-    litellm_model = settings.litellm_model
-    if "/" in litellm_model:
-        llm_provider, llm_model_name = litellm_model.split("/", 1)
-    else:
-        llm_provider = "openai"
-        llm_model_name = litellm_model
+    run = result.run
 
-    # Discovery strategy configuration (hardcoded for MVP, could be parameterized later)
-    strategy_id = "transcript_v1"
-    strategy_version = "1.0.0"
-    prompt_id = "clip_discovery_v1"
-    prompt_version = "1.0.0"
-
-    # Compute canonical request fingerprint from source + transcription + discovery config
-    # This captures the full execution identity so same source+config produces same fingerprint
-    fingerprint_data = (
-        f"{source.id}:{source.transcription_id}:{source.source_sha256 or ''}"
-        f":{strategy_id}:{strategy_version}:{prompt_id}:{prompt_version}"
-        f":{llm_provider}:{llm_model_name}"
-    )
-    request_fingerprint = hashlib.sha256(fingerprint_data.encode()).hexdigest()
-
-    # Check idempotency - handle existing runs
-    if idempotency_key:
-        result = await session.execute(
-            select(DiscoveryRun).where(DiscoveryRun.idempotency_key == idempotency_key)
-        )
-        existing_run = result.scalar_one_or_none()
-        if existing_run:
-            # Check if config matches (same fingerprint)
-            if existing_run.request_fingerprint == request_fingerprint:
-                # Same key, same config - return existing run
-                logger.info(f"Returning existing discovery run for idempotency key {idempotency_key[:8]}...")
-                return DiscoverResponse(
-                    id=existing_run.id,
-                    workflow_id=existing_run.workflow_id,
-                    status=existing_run.status,
-                    profile=existing_run.profile,
-                    llm_model=existing_run.llm_model,
-                    llm_provider=existing_run.llm_provider,
-                    total_windows=existing_run.total_windows,
-                    processed_windows=existing_run.processed_windows,
-                    completed_windows=existing_run.completed_windows,
-                    failed_windows=existing_run.failed_windows,
-                    total_candidates=existing_run.total_candidates,
-                    idempotency_key=existing_run.idempotency_key,
-                    request_fingerprint=existing_run.request_fingerprint,
-                    error_message=existing_run.error_message,
-                )
-            else:
-                # Same key, different config - 409 Conflict
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Idempotency key already used with different configuration",
-                )
-
-    # Build windows by duration (no segment loading)
-    duration = transcription.duration_seconds
-    effective_window_size = WINDOW_DURATION_SECONDS - WINDOW_OVERLAP_SECONDS
-    window_count = max(1, ceil((duration - WINDOW_OVERLAP_SECONDS) / effective_window_size))
-
-    windows_to_create = []
-    for i in range(window_count):
-        start = i * effective_window_size
-        end = min(start + WINDOW_DURATION_SECONDS, duration)
-
-        windows_to_create.append({
-            "window_index": i,
-            "start_seconds": start,
-            "end_seconds": end,
-        })
-
-        # Last window reached the end
-        if end >= duration:
-            break
-
-    # Create DiscoveryRun (using LLM model extracted earlier for fingerprint)
-    run = DiscoveryRun(
-        id=uuid4(),
-        workflow_id=workflow_id,
-        source_id=source.id,
-        transcription_id=transcription.id,
-        idempotency_key=idempotency_key,
-        request_fingerprint=request_fingerprint,
-        status="running",
-        profile="transcript_only",
-        strategy_id=strategy_id,
-        strategy_version=strategy_version,
-        prompt_id=prompt_id,
-        prompt_version=prompt_version,
-        llm_model=llm_model_name,
-        llm_provider=llm_provider,
-        total_windows=len(windows_to_create),
-        processed_windows=0,
-        completed_windows=0,
-        failed_windows=0,
-        total_candidates=0,
-        started_at=datetime.now(UTC),
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
-    )
-    session.add(run)
-
-    # Try to flush - handle IntegrityError for duplicate idempotency_key
-    try:
-        await session.flush()
-    except IntegrityError:
-        # Race condition: another request created the run
-        await session.rollback()
-        if idempotency_key:
-            result = await session.execute(
-                select(DiscoveryRun).where(DiscoveryRun.idempotency_key == idempotency_key)
-            )
-            existing_run = result.scalar_one_or_none()
-            if existing_run:
-                if existing_run.request_fingerprint == request_fingerprint:
-                    return DiscoverResponse(
-                        id=existing_run.id,
-                        workflow_id=existing_run.workflow_id,
-                        status=existing_run.status,
-                        profile=existing_run.profile,
-                        llm_model=existing_run.llm_model,
-                        llm_provider=existing_run.llm_provider,
-                        total_windows=existing_run.total_windows,
-                        processed_windows=existing_run.processed_windows,
-                        completed_windows=existing_run.completed_windows,
-                        failed_windows=existing_run.failed_windows,
-                        total_candidates=existing_run.total_candidates,
-                        idempotency_key=existing_run.idempotency_key,
-                        request_fingerprint=existing_run.request_fingerprint,
-                        error_message=existing_run.error_message,
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail="Idempotency key already used with different configuration",
-                    )
-        raise
-
-    # Create DiscoveryWindows
-    db_windows = []
-    for window_data in windows_to_create:
-        db_window = DiscoveryWindow(
-            id=uuid4(),
-            run_id=run.id,
-            window_index=window_data["window_index"],
-            start_seconds=window_data["start_seconds"],
-            end_seconds=window_data["end_seconds"],
-            segment_count=0,  # Will be populated when processing
-            status="pending",
-            attempt_count=0,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
-        )
-        db_windows.append(db_window)
-        session.add(db_window)
-
-    # Update workflow state using service
-    workflow_service = ClipWorkflowService(session)
-    await workflow_service.transition_status(workflow.id, "discovering")
-
-    # Commit run and windows before dispatching task
-    await session.commit()
-
-    # Bootstrap: schedule ONLY the first pending window
-    if db_windows:
+    # Dispatch first window task if newly created
+    if result.created and result.windows:
         from app.tasks.discovery_tasks import process_window
 
-        first_window = db_windows[0]
+        first_window = result.windows[0]
         process_window.delay(str(first_window.id), str(run.id))
-        logger.info(f"Created discovery run {run.id} with {len(db_windows)} windows, dispatched first window {first_window.id}")
+        logger.info(
+            f"Created discovery run {run.id} with {len(result.windows)} windows, "
+            f"dispatched first window {first_window.id}"
+        )
 
     return DiscoverResponse(
         id=run.id,

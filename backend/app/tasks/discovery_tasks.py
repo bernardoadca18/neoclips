@@ -412,21 +412,40 @@ async def _process_window(window_id: UUID, run_id: UUID) -> dict[str, Any]:
             return {"error": f"Processing failed: {e}", "status": "failed"}
 
 
-async def _increment_completed_windows(session: AsyncSession, run_id: UUID) -> None:
-    """Atomically increment completed_windows counter."""
+async def _increment_processed_windows(session: AsyncSession, run_id: UUID) -> None:
+    """Atomically increment processed_windows counter.
+
+    processed_windows = completed_windows + failed_windows
+    This must be called whenever a window reaches a terminal state.
+    """
     await session.execute(
         update(DiscoveryRun)
         .where(DiscoveryRun.id == run_id)
-        .values(completed_windows=DiscoveryRun.completed_windows + 1)
+        .values(processed_windows=DiscoveryRun.processed_windows + 1)
+    )
+
+
+async def _increment_completed_windows(session: AsyncSession, run_id: UUID) -> None:
+    """Atomically increment completed_windows and processed_windows counters."""
+    await session.execute(
+        update(DiscoveryRun)
+        .where(DiscoveryRun.id == run_id)
+        .values(
+            completed_windows=DiscoveryRun.completed_windows + 1,
+            processed_windows=DiscoveryRun.processed_windows + 1,
+        )
     )
 
 
 async def _increment_failed_windows(session: AsyncSession, run_id: UUID) -> None:
-    """Atomically increment failed_windows counter."""
+    """Atomically increment failed_windows and processed_windows counters."""
     await session.execute(
         update(DiscoveryRun)
         .where(DiscoveryRun.id == run_id)
-        .values(failed_windows=DiscoveryRun.failed_windows + 1)
+        .values(
+            failed_windows=DiscoveryRun.failed_windows + 1,
+            processed_windows=DiscoveryRun.processed_windows + 1,
+        )
     )
 
 
@@ -547,15 +566,20 @@ async def _finalize_discovery(run_id: UUID) -> dict[str, Any]:
                         candidate.duplicate_of_id = dedup_result.duplicate_of_id
                         candidate.updated_at = datetime.now(UTC)
 
-        # Update run status
+        # Update run status based on window outcomes
         failed_windows = run.failed_windows or 0
-        if failed_windows > 0 and run.completed_windows == 0:
+        completed_windows = run.completed_windows or 0
+
+        if failed_windows > 0 and completed_windows == 0:
+            # All windows failed
             run.status = "failed"
             run.error_message = "All windows failed processing"
         elif failed_windows > 0:
-            run.status = "completed"
+            # Some windows failed, some succeeded
+            run.status = "completed_with_errors"
             run.error_message = f"{failed_windows} windows failed"
         else:
+            # All windows succeeded
             run.status = "completed"
 
         run.completed_at = datetime.now(UTC)
