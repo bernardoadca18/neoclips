@@ -277,8 +277,13 @@ async def _process_window(window_id: UUID, run_id: UUID) -> dict[str, Any]:
             segments=window_segments,
         )
 
-        # Process with LLM
-        discovery_provider = LiteLLMHTTPDiscoveryProvider()
+        # Process with LLM using persisted execution identity
+        # Reconstruct provider with model from DiscoveryRun (not defaults)
+        discovery_provider = LiteLLMHTTPDiscoveryProvider(
+            model=run.llm_model or settings.litellm_model,
+            temperature=0.3,  # Default temperature - should be persisted in run
+            max_candidates_per_window=10,  # Default max candidates - should be persisted in run
+        )
         source_duration = transcription.duration_seconds or window_segments[-1].end_seconds
         total_transcript_length = sum(len(seg.text) for seg in window_segments)
 
@@ -566,9 +571,24 @@ async def _finalize_discovery(run_id: UUID) -> dict[str, Any]:
                         candidate.duplicate_of_id = dedup_result.duplicate_of_id
                         candidate.updated_at = datetime.now(UTC)
 
-        # Update run status based on window outcomes
-        failed_windows = run.failed_windows or 0
-        completed_windows = run.completed_windows or 0
+        # Reconcile counters from database (authoritative source)
+        result = await session.execute(
+            select(DiscoveryWindow.status)
+            .where(DiscoveryWindow.run_id == run_id)
+        )
+        window_statuses = [row[0] for row in result.fetchall()]
+
+        actual_completed = sum(1 for s in window_statuses if s == "completed")
+        actual_failed = sum(1 for s in window_statuses if s == "failed")
+        actual_processed = actual_completed + actual_failed
+
+        # Update counters with reconciled values
+        run.completed_windows = actual_completed
+        run.failed_windows = actual_failed
+        run.processed_windows = actual_processed
+
+        failed_windows = actual_failed
+        completed_windows = actual_completed
 
         if failed_windows > 0 and completed_windows == 0:
             # All windows failed

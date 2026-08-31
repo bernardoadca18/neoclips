@@ -68,56 +68,14 @@ class LiteLLMHTTPDiscoveryProvider(ClipDiscoveryProviderProtocol):
         self.timeout_seconds = timeout_seconds or settings.litellm_timeout_seconds
 
     def _build_system_prompt(self) -> str:
-        """Build the system prompt for clip discovery."""
-        return """You are a clip discovery assistant for video content.
+        """Build the system prompt for clip discovery.
 
-Your task is to identify compelling clip candidates from transcript segments.
+        Uses canonical prompt from app.prompts to ensure consistency
+        with prompt_hash computation in DiscoveryBootstrapService.
+        """
+        from app.prompts.clip_discovery_prompts import CLIP_DISCOVERY_V1_PROMPT
 
-RULES:
-1. Return ONLY valid JSON matching the exact schema provided
-2. Each clip MUST have start_segment_id and end_segment_id from the provided segments
-3. Clips should be 15-180 seconds in duration
-4. Focus on segments with clear narrative hooks: questions, revelations, emotional moments
-5. Provide descriptive titles and summaries
-6. Identify hook types: "question", "statement", "story", "revelation", "emotional", "humor"
-7. Maximum 10 clips per window
-8. Return {"clips": []} if no good candidates found
-
-HOOK TYPES:
-- question: Poses an intriguing question
-- statement: Makes a bold or surprising claim
-- story: Begins a narrative arc
-- revelation: Reveals new information
-- emotional: Contains emotional resonance
-- humor: Contains comedic potential
-
-SEMANTIC FEATURES (rate each 0.0 to 1.0):
-- hook_strength: How strong is the opening hook? (0=weak, 1=very strong)
-- standalone_clarity: Can this clip be understood without context? (0=needs context, 1=fully standalone)
-- narrative_completeness: Does the clip have a complete arc? (0=incomplete, 1=complete story)
-- emotional_intensity: How emotionally engaging is the content? (0=neutral, 1=very intense)
-- topic_relevance: How relevant to the main topic? (0=tangent, 1=core topic)
-
-OUTPUT SCHEMA (STRICT):
-{
-  "clips": [
-    {
-      "start_segment_id": "uuid-string",
-      "end_segment_id": "uuid-string",
-      "title": "Brief compelling title",
-      "summary": "One sentence summary",
-      "hook_type": "one of the hook types",
-      "hook_description": "Why this makes a good clip",
-      "hook_strength": 0.8,
-      "standalone_clarity": 0.9,
-      "narrative_completeness": 0.7,
-      "emotional_intensity": 0.5,
-      "topic_relevance": 0.9
-    }
-  ]
-}
-
-CRITICAL: Return ONLY the JSON object, no additional text or markdown."""
+        return CLIP_DISCOVERY_V1_PROMPT
 
     def _build_user_prompt(self, window: TranscriptWindow) -> str:
         """Build the user prompt with transcript segments."""

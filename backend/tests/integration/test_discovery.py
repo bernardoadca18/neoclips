@@ -18,8 +18,12 @@ from app.models.entities import ClipSource, ClipWorkflow, DiscoveryWindow
 
 @pytest.fixture
 def mock_media_indexer_client():
-    """Create a mock MediaIndexerClient."""
-    with patch("app.api.routers.discovery.MediaIndexerClient") as mock:
+    """Create a mock MediaIndexerClient.
+
+    Patches the bootstrap service's MediaIndexerClient since both
+    canonical and deprecated endpoints delegate to DiscoveryBootstrapService.
+    """
+    with patch("app.services.discovery_bootstrap_service.MediaIndexerClient") as mock:
         client_instance = MagicMock()
         mock.return_value = client_instance
         yield client_instance
@@ -102,7 +106,7 @@ class TestDiscoveryEndpointLocation:
 
         response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
 
-        assert response.status_code == status.HTTP_201_CREATED
+        assert response.status_code == status.HTTP_202_ACCEPTED
         data = response.json()
         assert data["workflow_id"] == str(workflow.id)
         assert data["status"] == "running"
@@ -137,7 +141,7 @@ class TestDurationBasedWindows:
 
         response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
 
-        assert response.status_code == status.HTTP_201_CREATED
+        assert response.status_code == status.HTTP_202_ACCEPTED
         data = response.json()
 
         # With 300s windows and 60s overlap, 1800s should create ~7 windows
@@ -172,7 +176,7 @@ class TestDurationBasedWindows:
 
         response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
 
-        assert response.status_code == status.HTTP_201_CREATED
+        assert response.status_code == status.HTTP_202_ACCEPTED
         data = response.json()
         assert data["total_windows"] >= 1
 
@@ -202,8 +206,8 @@ class TestIdempotencyWithConflict:
             headers={"Idempotency-Key": idempotency_key},
         )
 
-        assert response1.status_code == status.HTTP_201_CREATED
-        assert response2.status_code == status.HTTP_201_CREATED
+        assert response1.status_code == status.HTTP_202_ACCEPTED
+        assert response2.status_code == status.HTTP_202_ACCEPTED
         assert response1.json()["id"] == response2.json()["id"]
 
     @pytest.mark.asyncio
@@ -292,7 +296,7 @@ class TestIdempotencyWithConflict:
             headers={"Idempotency-Key": idempotency_key},
         )
 
-        assert response1.status_code == status.HTTP_201_CREATED
+        assert response1.status_code == status.HTTP_202_ACCEPTED
         assert response2.status_code == status.HTTP_409_CONFLICT
 
 
@@ -309,7 +313,7 @@ class TestWorkflowTransitions:
 
         response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
 
-        assert response.status_code == status.HTTP_201_CREATED
+        assert response.status_code == status.HTTP_202_ACCEPTED
 
         # Verify workflow status changed
         result = await session.execute(select(ClipWorkflow).where(ClipWorkflow.id == workflow.id))
@@ -420,7 +424,7 @@ class TestCanonicalFingerprint:
 
         response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
 
-        assert response.status_code == status.HTTP_201_CREATED
+        assert response.status_code == status.HTTP_202_ACCEPTED
         data = response.json()
         assert data["request_fingerprint"] is not None
 
@@ -444,7 +448,7 @@ class TestBootstrapScheduling:
 
             response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
 
-            assert response.status_code == status.HTTP_201_CREATED
+            assert response.status_code == status.HTTP_202_ACCEPTED
 
             # Verify process_window.delay was called exactly once (for first window)
             assert mock_process_window.delay.call_count == 1
@@ -479,7 +483,7 @@ class TestWindowOverlap:
 
         response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
 
-        assert response.status_code == status.HTTP_201_CREATED
+        assert response.status_code == status.HTTP_202_ACCEPTED
         run_id = response.json()["id"]
 
         # Get windows from database
