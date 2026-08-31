@@ -1,12 +1,11 @@
 """ClipSource service."""
 
-from datetime import datetime, timezone
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.entities import ClipSource, SourcePolicy
+from app.core.idempotency import compute_request_fingerprint, validate_idempotency
+from app.models.entities import ClipSource
 from app.repositories.clip_source_repository import ClipSourceRepository
 from app.repositories.source_policy_repository import SourcePolicyRepository
 from app.schemas.clip_source import ClipSourceCreate, ClipSourceUpdate
@@ -28,6 +27,11 @@ class ValidationError(Exception):
     pass
 
 
+class IdempotencyConflictError(Exception):
+    """Raised when idempotency key is reused with different request data."""
+    pass
+
+
 class ClipSourceService(BaseService[ClipSourceRepository]):
     """Service for ClipSource business logic."""
 
@@ -36,9 +40,35 @@ class ClipSourceService(BaseService[ClipSourceRepository]):
         super().__init__(session, repository)
         self.policy_repository = SourcePolicyRepository(session)
 
-    async def create(self, data: ClipSourceCreate) -> ClipSource:
-        """Create a new source."""
+    async def create(
+        self,
+        data: ClipSourceCreate,
+        idempotency_key: str | None = None,
+    ) -> ClipSource:
+        """Create a new source with optional idempotency."""
         create_data = data.model_dump()
+
+        # Handle idempotency
+        if idempotency_key:
+            fingerprint = compute_request_fingerprint(create_data)
+            existing = await self.repository.get_by_idempotency_key(idempotency_key)
+
+            if existing:
+                is_match, is_conflict = validate_idempotency(
+                    existing.idempotency_key,
+                    existing.request_fingerprint,
+                    idempotency_key,
+                    fingerprint,
+                )
+                if is_conflict:
+                    raise IdempotencyConflictError(
+                        f"Idempotency key '{idempotency_key}' already used with different request data"
+                    )
+                if is_match:
+                    return existing  # Idempotent replay
+
+            create_data["idempotency_key"] = idempotency_key
+            create_data["request_fingerprint"] = fingerprint
 
         # Validate mode requirements
         if data.mode == "safe_automated":

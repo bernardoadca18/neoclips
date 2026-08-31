@@ -7,12 +7,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Copy application code first for pip install
+COPY app ./app
 COPY pyproject.toml .
-RUN pip install --no-cache-dir -e ".[dev]"
 
-# Copy application code
-COPY . .
+# Install Python dependencies
+RUN pip install --no-cache-dir "."
+
+# Copy Alembic for migrations
+COPY alembic.ini .
+COPY alembic ./alembic
 
 # Expose port
 EXPOSE 8020

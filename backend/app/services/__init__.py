@@ -1,11 +1,6 @@
 """NeoClips services."""
 
 from app.services.base import BaseService
-from app.services.source_policy_service import (
-    SourcePolicyService,
-    PolicyNotFoundError,
-    PolicyAlreadyExistsError,
-)
 from app.services.clip_source_service import (
     ClipSourceService,
     SourceNotFoundError,
@@ -13,10 +8,16 @@ from app.services.clip_source_service import (
 )
 from app.services.clip_workflow_service import (
     ClipWorkflowService,
-    WorkflowNotFoundError,
     InvalidStateTransitionError,
     WorkflowAlreadyExistsError,
+    WorkflowNotFoundError,
 )
+from app.services.source_policy_service import (
+    PolicyAlreadyExistsError,
+    PolicyNotFoundError,
+    SourcePolicyService,
+)
+from app.services.workflow_error_history_service import WorkflowErrorHistoryService
 
 __all__ = [
     "BaseService",
@@ -30,4 +31,5 @@ __all__ = [
     "WorkflowNotFoundError",
     "InvalidStateTransitionError",
     "WorkflowAlreadyExistsError",
+    "WorkflowErrorHistoryService",
 ]

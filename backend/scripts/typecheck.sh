@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Run type checker
 
-set -e
+set -euo pipefail
 
-cd backend
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+cd "$SCRIPT_DIR"
 
 echo "Running mypy..."
-mypy app
+.venv/bin/mypy app/
 
 echo "Type checking complete!"

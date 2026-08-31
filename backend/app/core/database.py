@@ -1,11 +1,15 @@
 """Database configuration and session management."""
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
-from sqlalchemy import event
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.core.config import get_settings
 
@@ -63,7 +67,7 @@ async def task_session() -> AsyncGenerator[AsyncSession, None]:
 async def check_database_connection(session: AsyncSession) -> bool:
     """Check if database connection is healthy."""
     try:
-        await session.execute("SELECT 1")
+        await session.execute(text("SELECT 1"))
         return True
     except Exception:
         return False

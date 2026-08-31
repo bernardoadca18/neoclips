@@ -1,16 +1,9 @@
 """Integration tests for API endpoints (requires PostgreSQL)."""
 
-import asyncio
 from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.core.database import get_session
-from app.main import app
-from app.models.entities import SourcePolicy
-from app.repositories.source_policy_repository import SourcePolicyRepository
 
 
 @pytest.fixture
@@ -104,7 +97,8 @@ class TestSourcesAPI:
                 "operator_acknowledged": False,
             },
         )
-        assert response.status_code == 400
+        # Pydantic validation returns 422 for model_validator errors
+        assert response.status_code == 422
 
 
 @pytest.mark.postgres
@@ -124,6 +118,12 @@ class TestWorkflowsAPI:
             },
         )
         source_id = source_response.json()["id"]
+
+        # Update source to ready_for_discovery
+        await async_client.patch(
+            f"/v1/sources/{source_id}",
+            json={"status": "ready_for_discovery"},
+        )
 
         # Create workflow
         response = await async_client.post(
@@ -147,6 +147,12 @@ class TestWorkflowsAPI:
             },
         )
         source_id = source_response.json()["id"]
+
+        # Update source to ready_for_discovery
+        await async_client.patch(
+            f"/v1/sources/{source_id}",
+            json={"status": "ready_for_discovery"},
+        )
 
         # Create workflow
         await async_client.post("/v1/workflows/", json={"source_id": source_id})

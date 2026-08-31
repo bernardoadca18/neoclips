@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, RedisDsn, field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,22 +27,35 @@ class Settings(BaseSettings):
     api_port: int = 8020
 
     # Database
-    database_url: PostgresDsn = Field(
+    database_url: str = Field(
         default="postgresql+asyncpg://neoclips:neoclips@localhost:5432/neoclips"
     )
     database_pool_size: int = 5
     database_max_overflow: int = 10
 
     # Redis
-    redis_url: RedisDsn = Field(default="redis://localhost:6379/0")
+    redis_url: str = Field(default="redis://localhost:6379/0")
 
     # Celery
     celery_queue_name: str = "neoclips"
     celery_worker_concurrency: int = 1
     celery_worker_prefetch_multiplier: int = 1
 
-    # External services (for future stages)
-    media_indexer_url: str | None = None
+    # CORS - restrictive defaults, explicit configuration required for production
+    cors_origins: list[str] = Field(default=["http://localhost:3000", "http://localhost:8080"])
+    cors_allow_credentials: bool = True
+    cors_allow_methods: list[str] = Field(default=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+    cors_allow_headers: list[str] = Field(default=["*"])
+
+    # Media Indexer integration
+    media_indexer_base_url: str = Field(default="http://localhost:8000")
+    media_indexer_timeout_seconds: int = 30
+    media_indexer_project_name: str = "NeoClips Managed Sources"
+    media_indexer_initial_index_timeout_seconds: int = 600
+    media_indexer_transcription_timeout_seconds: int = 1800
+    media_indexer_poll_interval_seconds: int = 5
+
+    # Video Composer (future stage)
     video_composer_url: str | None = None
 
     @field_validator("log_level")

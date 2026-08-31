@@ -1,9 +1,9 @@
 """Unit tests for SourcePolicy schema validation."""
 
 import pytest
-from pydantic import ValidationError as PydanticValidationError
+from pydantic import ValidationError as PydanticValidationError  # noqa: F401
 
-from app.schemas.source_policy import SourcePolicyCreate, SourcePolicyUpdate
+from app.schemas.source_policy import SourcePolicyCreate
 
 
 def test_source_policy_create_valid():

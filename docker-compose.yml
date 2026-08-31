@@ -9,7 +9,7 @@ services:
     volumes:
       - neoclips-db-data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${NEOCLIPS_POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U neoclips"]
       interval: 5s
@@ -23,7 +23,7 @@ services:
     volumes:
       - neoclips-redis-data:/data
     ports:
-      - "6379:6379"
+      - "${NEOCLIPS_REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -40,10 +40,17 @@ services:
       APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: postgresql+asyncpg://neoclips:neoclips@db:5432/neoclips
       REDIS_URL: redis://redis:6379/0
-      CELERY_QUEUE_NAME: neoclips
+      CELERY_QUEUE_NAME: ${CELERY_QUEUE_NAME:-neoclips}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000","http://localhost:8080"]}
+      MEDIA_INDEXER_BASE_URL: ${MEDIA_INDEXER_BASE_URL:-http://media-indexer:8000}
+      MEDIA_INDEXER_TIMEOUT_SECONDS: ${MEDIA_INDEXER_TIMEOUT_SECONDS:-30}
+      MEDIA_INDEXER_PROJECT_NAME: ${MEDIA_INDEXER_PROJECT_NAME:-NeoClips Managed Sources}
+      MEDIA_INDEXER_INITIAL_INDEX_TIMEOUT_SECONDS: ${MEDIA_INDEXER_INITIAL_INDEX_TIMEOUT_SECONDS:-600}
+      MEDIA_INDEXER_TRANSCRIPTION_TIMEOUT_SECONDS: ${MEDIA_INDEXER_TRANSCRIPTION_TIMEOUT_SECONDS:-1800}
+      MEDIA_INDEXER_POLL_INTERVAL_SECONDS: ${MEDIA_INDEXER_POLL_INTERVAL_SECONDS:-5}
     ports:
-      - "8020:8020"
+      - "${NEOCLIPS_API_PORT:-8020}:8020"
     depends_on:
       db:
         condition: service_healthy
@@ -56,13 +63,19 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: neoclips-worker
-    command: celery -A app.core.celery_app.celery_app worker -Q neoclips --concurrency=1 -l info
+    command: celery -A app.core.celery_app.celery_app worker -Q ${CELERY_QUEUE_NAME:-neoclips} --concurrency=1 -l info
     environment:
       APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: postgresql+asyncpg://neoclips:neoclips@db:5432/neoclips
       REDIS_URL: redis://redis:6379/0
-      CELERY_QUEUE_NAME: neoclips
+      CELERY_QUEUE_NAME: ${CELERY_QUEUE_NAME:-neoclips}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MEDIA_INDEXER_BASE_URL: ${MEDIA_INDEXER_BASE_URL:-http://media-indexer:8000}
+      MEDIA_INDEXER_TIMEOUT_SECONDS: ${MEDIA_INDEXER_TIMEOUT_SECONDS:-30}
+      MEDIA_INDEXER_PROJECT_NAME: ${MEDIA_INDEXER_PROJECT_NAME:-NeoClips Managed Sources}
+      MEDIA_INDEXER_INITIAL_INDEX_TIMEOUT_SECONDS: ${MEDIA_INDEXER_INITIAL_INDEX_TIMEOUT_SECONDS:-600}
+      MEDIA_INDEXER_TRANSCRIPTION_TIMEOUT_SECONDS: ${MEDIA_INDEXER_TRANSCRIPTION_TIMEOUT_SECONDS:-1800}
+      MEDIA_INDEXER_POLL_INTERVAL_SECONDS: ${MEDIA_INDEXER_POLL_INTERVAL_SECONDS:-5}
     depends_on:
       db:
         condition: service_healthy

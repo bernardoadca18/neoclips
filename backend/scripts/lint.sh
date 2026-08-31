@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Run linter
 
-set -e
+set -euo pipefail
 
-cd backend
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+cd "$SCRIPT_DIR"
 
 echo "Running ruff..."
-ruff check .
+.venv/bin/ruff check app/
 
 echo "Linting complete!"

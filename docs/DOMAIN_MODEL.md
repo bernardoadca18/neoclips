@@ -109,9 +109,7 @@ Represents a pipeline execution.
 | updated_at | DateTime | Last update timestamp |
 
 **Status Values:**
-- `created` — Workflow created, not started
-- `ingesting` — Source being ingested
-- `transcribing` — Source being transcribed
+- `created` — Workflow created, waiting for source to be ready
 - `discovering` — Clip candidates being discovered
 - `observing` — Multimodal observation running
 - `reranking` — Candidates being reranked
@@ -123,6 +121,9 @@ Represents a pipeline execution.
 - `blocked` — Blocked (rights, policy, or external issue)
 - `failed` — Failed with error
 - `cancelled` — Cancelled by operator
+
+**Note:** ClipWorkflow does NOT own `ingesting` or `transcribing` states.
+Those belong to ClipSource (Media Indexer pipeline).
 
 **Constraints:**
 - `attempt_count` >= 0

@@ -1,7 +1,6 @@
 """Unit tests for ClipWorkflow schema validation."""
 
 import pytest
-from pydantic import ValidationError as PydanticValidationError
 
 from app.schemas.clip_workflow import ClipWorkflowCreate, ClipWorkflowUpdate
 

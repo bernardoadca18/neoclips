@@ -2,7 +2,6 @@
 name = "neoclips"
 version = "0.1.0"
 description = "NeoClips - Clip discovery and production engine"
-readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [
@@ -33,6 +32,8 @@ dev = [
     "mypy>=1.13.0",
     "types-redis>=4.6.0",
     "testcontainers[postgres]>=4.8.0",
+    "aiosqlite>=0.20.0",
+    "httpx>=0.27.0",
 ]
 
 [build-system]

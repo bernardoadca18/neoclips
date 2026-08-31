@@ -1,6 +1,6 @@
 """Base repository with common CRUD operations."""
 
-from typing import Any, Generic, TypeVar
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -8,10 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.base import Base
 
-ModelType = TypeVar("ModelType", bound=Base)
 
-
-class BaseRepository(Generic[ModelType]):
+class BaseRepository[ModelType: Base]:
     """Base repository with common CRUD operations."""
 
     def __init__(self, session: AsyncSession, model: type[ModelType]) -> None:
@@ -20,7 +18,7 @@ class BaseRepository(Generic[ModelType]):
 
     async def get(self, id: UUID) -> ModelType | None:
         """Get entity by ID."""
-        stmt = select(self.model).where(self.model.id == id)
+        stmt = select(self.model).where(self.model.id == id)  # type: ignore[attr-defined]
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -39,9 +37,13 @@ class BaseRepository(Generic[ModelType]):
         return entity
 
     async def update(self, entity: ModelType, data: dict[str, Any]) -> ModelType:
-        """Update entity."""
+        """Update entity.
+
+        Allows setting fields to None by checking if key exists in data.
+        Differentiates 'field omitted' from 'field set to None'.
+        """
         for key, value in data.items():
-            if value is not None:
+            if key in data:
                 setattr(entity, key, value)
         await self.session.flush()
         await self.session.refresh(entity)

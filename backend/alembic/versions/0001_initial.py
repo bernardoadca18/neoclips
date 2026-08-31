@@ -5,17 +5,18 @@ Revises:
 Create Date: 2026-08-30
 
 """
-from typing import Sequence, Union
+from typing import Sequence  # noqa: UP035
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
+
 # revision identifiers, used by Alembic.
 revision: str = '0001_initial'
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -66,7 +67,7 @@ def upgrade() -> None:
         sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("mode IN ('safe_automated', 'manual_override')", name='ck_clip_source_mode'),
         sa.CheckConstraint("rights_status IN ('verified', 'unverified', 'blocked')", name='ck_clip_source_rights_status'),
-        sa.CheckConstraint("status IN ('pending', 'ingesting', 'transcribing', 'ready', 'failed', 'blocked')", name='ck_clip_source_status'),
+        sa.CheckConstraint("status IN ('pending', 'ingesting', 'transcribing', 'ready_for_discovery', 'ready', 'failed', 'blocked')", name='ck_clip_source_status'),
     )
 
     # Create clip_workflows table

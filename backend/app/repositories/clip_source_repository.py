@@ -1,6 +1,5 @@
 """ClipSource repository."""
 
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -27,3 +26,9 @@ class ClipSourceRepository(BaseRepository[ClipSource]):
         stmt = select(ClipSource).where(ClipSource.source_policy_id == policy_id)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def get_by_idempotency_key(self, idempotency_key: str) -> ClipSource | None:
+        """Get source by idempotency key."""
+        stmt = select(ClipSource).where(ClipSource.idempotency_key == idempotency_key)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()

@@ -1,15 +1,20 @@
 """Unit tests for ClipWorkflow service state transitions."""
 
-import pytest
+import pytest  # noqa: F401
 
-from app.services.clip_workflow_service import ClipWorkflowService, VALID_TRANSITIONS
+from app.services.clip_workflow_service import VALID_TRANSITIONS
 
 
 def test_valid_transitions_from_created():
-    """Created can transition to ingesting or cancelled."""
-    assert "ingesting" in VALID_TRANSITIONS["created"]
+    """Created can transition to discovering or cancelled.
+
+    Note: ClipWorkflow no longer has ingesting/transcribing states.
+    ClipSource owns Media Indexer pipeline states.
+    ClipWorkflow starts discovering when ClipSource is ready_for_discovery.
+    """
+    assert "discovering" in VALID_TRANSITIONS["created"]
     assert "cancelled" in VALID_TRANSITIONS["created"]
-    assert "discovering" not in VALID_TRANSITIONS["created"]
+    assert "ingesting" not in VALID_TRANSITIONS["created"]
 
 
 def test_valid_transitions_from_failed():

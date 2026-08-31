@@ -1,14 +1,15 @@
 """ClipWorkflow service."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.idempotency import compute_request_fingerprint, validate_idempotency
 from app.models.entities import ClipWorkflow
-from app.repositories.clip_workflow_repository import ClipWorkflowRepository
 from app.repositories.clip_source_repository import ClipSourceRepository
+from app.repositories.clip_workflow_repository import ClipWorkflowRepository
 from app.schemas.clip_workflow import ClipWorkflowCreate, ClipWorkflowUpdate
 from app.services.base import BaseService
 
@@ -33,11 +34,17 @@ class WorkflowAlreadyExistsError(Exception):
     pass
 
 
+class IdempotencyConflictError(Exception):
+    """Raised when idempotency key is reused with different request data."""
+    pass
+
+
 # Valid state transitions for ClipWorkflow
+# NOTE: ClipWorkflow starts at 'created' and waits for ClipSource to reach 'ready_for_discovery'
+# ClipSource owns Media Indexer pipeline states (ingesting, transcribing)
+# ClipWorkflow owns Clip Discovery pipeline states (discovering onwards)
 VALID_TRANSITIONS: dict[str, set[str]] = {
-    "created": {"ingesting", "cancelled"},
-    "ingesting": {"transcribing", "failed", "blocked", "cancelled"},
-    "transcribing": {"discovering", "failed", "blocked", "cancelled"},
+    "created": {"discovering", "cancelled"},  # Can only start discovering when source is ready
     "discovering": {"observing", "reranking", "awaiting_selection", "failed", "cancelled"},
     "observing": {"reranking", "awaiting_selection", "failed", "cancelled"},
     "reranking": {"awaiting_selection", "failed", "cancelled"},
@@ -68,29 +75,59 @@ class ClipWorkflowService(BaseService[ClipWorkflowRepository]):
         """
         Create a new workflow.
 
-        For MVP, we enforce one workflow per source.
-        Idempotency is based on source_id.
+        Enforces one workflow per source via unique constraint.
+        Supports idempotency via Idempotency-Key header.
         """
         # Check source exists
         source = await self.source_repository.get(data.source_id)
         if not source:
             raise SourceNotFoundError(f"Source {data.source_id} not found")
 
-        # Check for existing workflow (idempotency)
-        existing = await self.repository.get_by_idempotency_key(
-            data.source_id,
-            idempotency_key or "",
-        )
-        if existing:
+        # Handle idempotency
+        if idempotency_key:
+            fingerprint = compute_request_fingerprint({"source_id": str(data.source_id)})
+            existing = await self.repository.get_by_idempotency_key(idempotency_key)
+
+            if existing:
+                is_match, is_conflict = validate_idempotency(
+                    existing.idempotency_key,
+                    existing.request_fingerprint,
+                    idempotency_key,
+                    fingerprint,
+                )
+                if is_conflict:
+                    raise IdempotencyConflictError(
+                        f"Idempotency key '{idempotency_key}' already used with different request data"
+                    )
+                if is_match:
+                    return existing  # Idempotent replay
+
+        # Check for existing workflow (unique constraint on source_id)
+        existing_workflow = await self.repository.get_by_source(data.source_id)
+        if existing_workflow:
             raise WorkflowAlreadyExistsError(
                 f"Workflow already exists for source {data.source_id}"
             )
 
-        create_data = {
+        # Validate that source is ready for discovery
+        if source.status != "ready_for_discovery":
+            raise InvalidStateTransitionError(
+                f"Cannot create workflow: source status is '{source.status}', "
+                "must be 'ready_for_discovery'"
+            )
+
+        create_data: dict[str, Any] = {
             "source_id": data.source_id,
             "status": "created",
             "attempt_count": 0,
         }
+
+        if idempotency_key:
+            create_data["idempotency_key"] = idempotency_key
+            create_data["request_fingerprint"] = compute_request_fingerprint(
+                {"source_id": str(data.source_id)}
+            )
+
         workflow = await self.repository.create(create_data)
         return workflow
 
@@ -101,8 +138,8 @@ class ClipWorkflowService(BaseService[ClipWorkflowRepository]):
             raise WorkflowNotFoundError(f"Workflow {workflow_id} not found")
         return workflow
 
-    async def get_by_source(self, source_id: UUID) -> list[ClipWorkflow]:
-        """Get workflows by source ID."""
+    async def get_by_source(self, source_id: UUID) -> ClipWorkflow | None:
+        """Get workflow by source ID."""
         return await self.repository.get_by_source(source_id)
 
     async def get_all(self, limit: int = 100, offset: int = 0) -> list[ClipWorkflow]:
@@ -136,11 +173,11 @@ class ClipWorkflowService(BaseService[ClipWorkflowRepository]):
 
         # Handle started_at
         if new_status not in {"created", "cancelled"} and not workflow.started_at:
-            update_data["started_at"] = datetime.now(timezone.utc)
+            update_data["started_at"] = datetime.now(UTC)
 
         # Handle completed_at for terminal states
         if new_status in {"ready_for_review", "blocked", "cancelled"}:
-            update_data["completed_at"] = datetime.now(timezone.utc)
+            update_data["completed_at"] = datetime.now(UTC)
 
         # Handle error info
         if error_category:

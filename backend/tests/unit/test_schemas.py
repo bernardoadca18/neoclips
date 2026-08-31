@@ -3,7 +3,6 @@
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError as PydanticValidationError
 
 from app.schemas.clip_source import ClipSourceCreate, ClipSourceUpdate
 

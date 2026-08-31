@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Start development environment
 
-set -e
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 echo "Starting NeoClips development environment..."
 
 # Start infrastructure
+cd "$REPO_ROOT"
 docker compose up -d db redis
 
 # Wait for services to be ready
@@ -13,7 +17,7 @@ echo "Waiting for services..."
 sleep 3
 
 # Run migrations
-cd backend
+cd "$SCRIPT_DIR"
 alembic upgrade head
 
 # Start API

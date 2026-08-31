@@ -1,19 +1,18 @@
 """Pytest configuration and fixtures."""
 
 import asyncio
-from typing import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Generator
+from typing import Any
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from testcontainers.community.postgres import PostgresContainer
 
+from app.main import app
 from app.models.base import Base
-from app.models.entities import ClipSource, ClipWorkflow, SourcePolicy
-
-
-# Test database URL (use SQLite for unit tests)
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest.fixture(scope="session")
@@ -24,18 +23,35 @@ def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
     loop.close()
 
 
+@pytest.fixture(scope="session")
+def postgres_container() -> Generator[PostgresContainer, None, None]:
+    """Start a PostgreSQL container for integration tests."""
+    container = PostgresContainer("postgres:16-alpine")
+    container.start()
+    yield container
+    container.stop()
+
+
 @pytest_asyncio.fixture
-async def engine():
-    """Create a test database engine."""
+async def engine(postgres_container: PostgresContainer):
+    """Create a test database engine with real PostgreSQL."""
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+    # Convert postgres container URL to asyncpg format
+    url = postgres_container.get_connection_url()
+    # Handle both postgresql:// and postgresql+psycopg2:// formats
+    async_url = url.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
+    async_url = async_url.replace("postgresql://", "postgresql+asyncpg://")
 
+    engine = create_async_engine(async_url, echo=False)
+
+    # Create all tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     yield engine
 
+    # Cleanup
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
 
@@ -56,34 +72,36 @@ async def session(engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture
-def sample_policy_data():
+def sample_policy_data() -> dict[str, Any]:
     """Sample policy data for testing."""
     return {
         "id": uuid4(),
         "name": "Test Policy",
         "version": "1.0",
-        "verification_status": "verified",
-        "commercial_use_allowed": True,
-        "derivatives_allowed": True,
-        "monetization_allowed": True,
+        "verification_status": "unverified",
+        "commercial_use_allowed": False,
+        "derivatives_allowed": False,
+        "monetization_allowed": False,
+        "attribution_required": False,
+        "embargo_seconds": 0,
     }
 
 
 @pytest.fixture
-def sample_source_data(sample_policy_data):
+def sample_source_data() -> dict[str, Any]:
     """Sample source data for testing."""
     return {
         "id": uuid4(),
-        "source_policy_id": sample_policy_data["id"],
-        "mode": "safe_automated",
+        "mode": "manual_override",
+        "operator_acknowledged": True,
         "title": "Test Source",
-        "rights_status": "verified",
+        "rights_status": "unverified",
         "status": "pending",
     }
 
 
 @pytest.fixture
-def sample_workflow_data(sample_source_data):
+def sample_workflow_data(sample_source_data: dict[str, Any]) -> dict[str, Any]:
     """Sample workflow data for testing."""
     return {
         "id": uuid4(),
@@ -91,3 +109,23 @@ def sample_workflow_data(sample_source_data):
         "status": "created",
         "attempt_count": 0,
     }
+
+
+@pytest_asyncio.fixture
+async def async_client(session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+    """Create an async HTTP client for testing."""
+    from app.core.database import get_session
+
+    # Override the dependency
+    async def override_get_session():
+        yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        yield client
+
+    app.dependency_overrides.clear()

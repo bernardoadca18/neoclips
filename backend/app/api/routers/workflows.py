@@ -10,6 +10,7 @@ from app.core.database import get_session
 from app.schemas.clip_workflow import ClipWorkflowCreate, ClipWorkflowResponse, ClipWorkflowUpdate
 from app.services.clip_workflow_service import (
     ClipWorkflowService,
+    IdempotencyConflictError,
     InvalidStateTransitionError,
     SourceNotFoundError,
     WorkflowAlreadyExistsError,
@@ -65,6 +66,17 @@ async def create_workflow(
             detail={
                 "error": {
                     "category": "conflict",
+                    "message": str(e),
+                    "details": {},
+                }
+            },
+        )
+    except IdempotencyConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": {
+                    "category": "idempotency_conflict",
                     "message": str(e),
                     "details": {},
                 }

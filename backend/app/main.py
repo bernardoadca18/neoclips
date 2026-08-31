@@ -1,12 +1,18 @@
 """NeoClips FastAPI application."""
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routers import health_router, policies_router, sources_router, workflows_router
+from app.api.routers import (
+    discovery_router,
+    health_router,
+    policies_router,
+    sources_router,
+    workflows_router,
+)
 from app.core.config import get_settings
 from app.core.database import close_database_connection
 from app.core.logging_config import setup_logging
@@ -38,10 +44,10 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.cors_origins,
+    allow_credentials=settings.cors_allow_credentials,
+    allow_methods=settings.cors_allow_methods,
+    allow_headers=settings.cors_allow_headers,
 )
 
 # Include routers
@@ -49,6 +55,7 @@ app.include_router(health_router)
 app.include_router(policies_router)
 app.include_router(sources_router)
 app.include_router(workflows_router)
+app.include_router(discovery_router)
 
 
 @app.get("/", include_in_schema=False)

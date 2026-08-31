@@ -1,7 +1,6 @@
 """SourcePolicy service."""
 
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,7 +58,7 @@ class SourcePolicyService(BaseService[SourcePolicyRepository]):
 
         # If verification_status is being set to verified, set verified_at
         if update_data.get("verification_status") == "verified":
-            update_data["verified_at"] = datetime.now(timezone.utc)
+            update_data["verified_at"] = datetime.now(UTC)
 
         policy = await self.repository.update(policy, update_data)
         return policy
@@ -74,7 +73,7 @@ class SourcePolicyService(BaseService[SourcePolicyRepository]):
         policy = await self.get(policy_id)
         update_data = {
             "verification_status": "verified",
-            "verified_at": datetime.now(timezone.utc),
+            "verified_at": datetime.now(UTC),
         }
         if evidence_uri:
             update_data["evidence_uri"] = evidence_uri

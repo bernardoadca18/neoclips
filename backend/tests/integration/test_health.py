@@ -2,7 +2,6 @@
 
 import pytest
 from fastapi.testclient import TestClient
-from httpx import AsyncClient
 
 from app.main import app
 
@@ -34,7 +33,16 @@ class TestReadinessEndpoint:
         # Accept either 200 (ready) or 503 (degraded)
         assert response.status_code in [200, 503]
         data = response.json()
-        assert "status" in data
-        assert "dependencies" in data
-        assert "postgres" in data["dependencies"]
-        assert "redis" in data["dependencies"]
+        # Response is wrapped in "detail" for 503 responses
+        if response.status_code == 503:
+            assert "detail" in data
+            detail = data["detail"]
+            assert "status" in detail
+            assert "dependencies" in detail
+            assert "postgres" in detail["dependencies"]
+            assert "redis" in detail["dependencies"]
+        else:
+            assert "status" in data
+            assert "dependencies" in data
+            assert "postgres" in data["dependencies"]
+            assert "redis" in data["dependencies"]
