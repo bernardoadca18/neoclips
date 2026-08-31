@@ -4,7 +4,18 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -213,6 +224,14 @@ class DiscoveryRun(Base, UUIDPrimaryKey, TimestampMixin):
     workflow_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("clip_workflows.id", ondelete="CASCADE"), nullable=False
     )
+    # Durable identity fields for recovery and auditing
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clip_sources.id", ondelete="SET NULL"), nullable=True
+    )
+    transcription_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    strategy_id: Mapped[str | None] = mapped_column(String(100), nullable=True)  # Hash of config
+    prompt_id: Mapped[str | None] = mapped_column(String(100), nullable=True)  # Hash of prompt
+    config_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON config snapshot
     status: Mapped[str] = mapped_column(String(50), nullable=False, server_default="pending")
     profile: Mapped[str] = mapped_column(String(50), nullable=False, server_default="transcript_only")
     llm_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -271,8 +290,8 @@ class DiscoveryWindow(Base, UUIDPrimaryKey, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("discovery_runs.id", ondelete="CASCADE"), nullable=False
     )
     window_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    start_seconds: Mapped[float] = mapped_column(Integer, nullable=False)  # Start time in source
-    end_seconds: Mapped[float] = mapped_column(Integer, nullable=False)  # End time in source
+    start_seconds: Mapped[float] = mapped_column(Float, nullable=False)  # Start time in source
+    end_seconds: Mapped[float] = mapped_column(Float, nullable=False)  # End time in source
     segment_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     status: Mapped[str] = mapped_column(String(50), nullable=False, server_default="pending")
     llm_response_raw: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -307,6 +326,8 @@ class DiscoveryWindow(Base, UUIDPrimaryKey, TimestampMixin):
             "segment_count >= 0",
             name="ck_discovery_window_segment_count",
         ),
+        # Idempotency: ensure unique window index within a run
+        UniqueConstraint("run_id", "window_index", name="uq_discovery_window_run_index"),
     )
 
 
@@ -329,14 +350,14 @@ class ClipCandidate(Base, UUIDPrimaryKey, TimestampMixin):
     )
     llm_suggested_start_segment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     llm_suggested_end_segment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    canonical_start_seconds: Mapped[float] = mapped_column(Integer, nullable=False)
-    canonical_end_seconds: Mapped[float] = mapped_column(Integer, nullable=False)
-    duration_seconds: Mapped[float] = mapped_column(Integer, nullable=False)
+    canonical_start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    canonical_end_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     hook_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     hook_description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    score_v1: Mapped[float | None] = mapped_column(Integer, nullable=True)  # Deterministic score
+    score_v1: Mapped[float | None] = mapped_column(Float, nullable=True)  # Deterministic score
     score_v1_components: Mapped[dict | None] = mapped_column(Text, nullable=True)  # JSON breakdown
     is_duplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
@@ -367,5 +388,10 @@ class ClipCandidate(Base, UUIDPrimaryKey, TimestampMixin):
         CheckConstraint(
             "selection_rank IS NULL OR selection_rank >= 1",
             name="ck_clip_candidate_selection_rank",
+        ),
+        # Idempotency: unique candidate fingerprint within a run
+        UniqueConstraint(
+            "run_id", "canonical_start_seconds", "canonical_end_seconds",
+            name="uq_clip_candidate_fingerprint"
         ),
     )

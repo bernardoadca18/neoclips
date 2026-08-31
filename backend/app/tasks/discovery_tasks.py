@@ -74,8 +74,8 @@ async def _run_discovery(workflow_id: UUID) -> dict:
 
         try:
             transcription = await client.get_transcription(source.transcription_id)
-            segments_response = await client.get_transcript_segments(source.transcription_id)
-            segments = segments_response.items
+            # Use get_all_transcript_segments to fetch ALL pages, not just first 500
+            segments = await client.get_all_transcript_segments(source.transcription_id)
         except Exception as e:
             logger.error(f"Failed to get transcript: {e}")
             return {"error": f"Failed to get transcript: {e}"}

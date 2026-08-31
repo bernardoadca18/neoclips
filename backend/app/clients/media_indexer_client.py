@@ -471,6 +471,9 @@ class MediaIndexerClient:
 
         Uses GET /transcriptions/{transcription_id}/segments.
         This is the preferred way to access transcript content.
+
+        Note: This returns a SINGLE page. For complete transcript access,
+        use get_all_transcript_segments() which handles pagination automatically.
         """
         response = await self._request(
             "GET",
@@ -492,6 +495,68 @@ class MediaIndexerClient:
             )
 
         return TranscriptSegmentPage(**response.json())
+
+    async def get_all_transcript_segments(
+        self,
+        transcription_id: UUID,
+        page_size: int = 500,
+    ) -> list[TranscriptSegmentOut]:
+        """Get ALL transcript segments, handling pagination automatically.
+
+        This method fetches all pages until the complete transcript is retrieved.
+        Use this when you need the entire transcript, not just one page.
+
+        Args:
+            transcription_id: UUID of the transcription
+            page_size: Number of segments per page (default 500)
+
+        Returns:
+            List of all TranscriptSegmentOut objects
+
+        Raises:
+            MediaIndexerAPIError: If transcription not found or API error
+            MediaIndexerConnectionError: If connection fails
+            MediaIndexerTimeoutError: If request times out
+        """
+        all_segments: list[TranscriptSegmentOut] = []
+        offset = 0
+
+        while True:
+            page = await self.get_transcript_segments(
+                transcription_id=transcription_id,
+                offset=offset,
+                limit=page_size,
+            )
+
+            all_segments.extend(page.items)
+
+            # Check if we've fetched all segments
+            if offset + len(page.items) >= page.total:
+                break
+
+            offset += len(page.items)
+
+            # Safety: prevent infinite loops
+            if len(page.items) == 0:
+                logger.warning(
+                    "empty_transcript_page",
+                    extra={
+                        "transcription_id": str(transcription_id),
+                        "offset": offset,
+                        "total": page.total,
+                    },
+                )
+                break
+
+        logger.info(
+            "all_transcript_segments_fetched",
+            extra={
+                "transcription_id": str(transcription_id),
+                "total_segments": len(all_segments),
+            },
+        )
+
+        return all_segments
 
     async def list_transcriptions_for_session(self, session_id: UUID) -> list[TranscriptionOut]:
         """List transcriptions for a session."""
