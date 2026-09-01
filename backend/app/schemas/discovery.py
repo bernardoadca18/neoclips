@@ -34,7 +34,7 @@ class DiscoveryRunUpdate(BaseModel):
     def validate_status(cls, v: str | None) -> str | None:
         if v is None:
             return v
-        valid = {"pending", "running", "completed", "failed"}
+        valid = {"pending", "running", "completed", "completed_with_errors", "failed"}
         if v not in valid:
             raise ValueError(f"status must be one of {valid}")
         return v

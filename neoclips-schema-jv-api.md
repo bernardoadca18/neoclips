@@ -19,7 +19,7 @@
 
 ## 2. Jarvis Integration Summary
 
-NeoClips exposes a REST API for managing video sources, workflows, and clip discovery. The system integrates with external services (Media Indexer, LiteLLM) for video processing and AI inference. All state is persisted in PostgreSQL with Celery handling async orchestration.
+NeoClips exposes a REST API for managing video sources, workflows, and clip discovery. The system integrates with external services (Media Indexer, 9Router) for video processing and AI inference. All state is persisted in PostgreSQL with Celery handling async orchestration.
 
 **Integration Mode**: HTTP REST API + Polling for long-running operations
 
@@ -444,11 +444,11 @@ REDIS_URL=redis://localhost:6379/0
 MEDIA_INDEXER_BASE_URL=http://localhost:8010
 MEDIA_INDEXER_TIMEOUT_SECONDS=30
 
-# LiteLLM Integration
-LITELLM_BASE_URL=http://localhost:4000
-LITELLM_API_KEY=sk-xxx
-LITELLM_TIMEOUT_SECONDS=60
-LITELLM_MODEL=gpt-4o
+# 9Router LLM Gateway
+NINE_ROUTER_BASE_URL=http://localhost:20128
+NINE_ROUTER_API_KEY=sk-xxx
+NINE_ROUTER_TIMEOUT_SECONDS=120
+NINE_ROUTER_DISCOVERY_COMBO=clip-discovery
 
 # API Server
 API_HOST=0.0.0.0
@@ -485,22 +485,28 @@ API_PORT=8020
 - `MediaIndexerTimeoutError` - Request timeout
 - `MediaIndexerAPIError` - API error with status code
 
-### 9.2 LiteLLM HTTP Discovery Provider
+### 9.2 9Router Discovery Provider
 
-**Purpose**: LLM-powered clip discovery
+**Purpose**: LLM-powered clip discovery via 9Router gateway
 
-**Client Location**: `backend/app/services/litellm_http_discovery_provider.py`
+**Client Location**: `backend/app/services/ninerouter_discovery_provider.py`
 
 **Configuration**:
-- Base URL: `LITELLM_BASE_URL`
-- Model: `LITELLM_MODEL` (default: `gpt-4o`)
-- Timeout: `LITELLM_TIMEOUT_SECONDS` (default: 60)
+- Base URL: `NINE_ROUTER_BASE_URL` (default: `http://localhost:20128`)
+- API Key: `NINE_ROUTER_API_KEY` (optional)
+- Timeout: `NINE_ROUTER_TIMEOUT_SECONDS` (default: 120)
+- Combo Alias: `NINE_ROUTER_DISCOVERY_COMBO` (default: `clip-discovery`)
 
 **Discovery Flow**:
 1. Build transcript window (5 min with 1 min overlap)
-2. Send to LLM with structured prompt
+2. Send to 9Router Combo endpoint with structured prompt
 3. Parse JSON response with clip suggestions
 4. Canonicalize segment IDs to timestamps
+
+**Architecture**:
+9Router acts as an OpenAI-compatible gateway that routes requests to configured
+LLM providers. The `clip-discovery` Combo is configured in 9Router to use the
+appropriate model for clip discovery tasks.
 
 ---
 
@@ -788,7 +794,7 @@ If IoU >= 0.5:
 | Transcription | 1200 seconds (20 minutes) |
 | Stale Window Recovery | 600 seconds (10 minutes) |
 | Media Indexer HTTP | 30 seconds |
-| LiteLLM HTTP | 60 seconds |
+| 9Router HTTP | 120 seconds |
 | Poll Interval | 5 seconds |
 
 ---
@@ -839,7 +845,7 @@ If IoU >= 0.5:
 
 - PostgreSQL required (opt-in with `-m postgres`)
 - Real database transactions
-- Mocked Media Indexer/LiteLLM responses
+- Mocked Media Indexer/9Router responses
 
 ---
 
@@ -963,7 +969,7 @@ neoclips/
 ### Stage 3 (Current)
 
 - Implemented discovery API endpoints
-- Added LiteLLM HTTP discovery provider
+- Added 9Router discovery provider
 - Implemented candidate canonicalizer
 - Added deterministic scoring (clip_score_v1)
 - Implemented candidate deduplication

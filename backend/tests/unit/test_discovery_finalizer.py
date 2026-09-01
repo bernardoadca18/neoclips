@@ -147,17 +147,17 @@ class TestFinalizationOutcomes:
         workflow_result = MagicMock()
         workflow_result.scalar_one_or_none.return_value = workflow
 
-        candidate_result = MagicMock()
-        candidate_result.scalars.return_value.all.return_value = []
-
         window_result = MagicMock()
         window_result.fetchall.return_value = [("failed",), ("failed",)]
+
+        candidate_result = MagicMock()
+        candidate_result.scalars.return_value.all.return_value = []
 
         mock_session.execute.side_effect = [
             run_result,
             workflow_result,
-            candidate_result,
             window_result,
+            candidate_result,
         ]
 
         mock_workflow_service = MagicMock()
@@ -207,19 +207,19 @@ class TestFinalizationOutcomes:
         workflow_result = MagicMock()
         workflow_result.scalar_one_or_none.return_value = workflow
 
-        candidate_result = MagicMock()
-        candidate_result.scalars.return_value.all.return_value = []
-
         window_result = MagicMock()
         window_result.fetchall.return_value = [
             ("completed",), ("completed",), ("failed",)
         ]
 
+        candidate_result = MagicMock()
+        candidate_result.scalars.return_value.all.return_value = []
+
         mock_session.execute.side_effect = [
             run_result,
             workflow_result,
-            candidate_result,
             window_result,
+            candidate_result,
         ]
 
         mock_workflow_service = MagicMock()
@@ -274,19 +274,18 @@ class TestEarlyFinalizerReturns:
         workflow_result = MagicMock()
         workflow_result.scalar_one_or_none.return_value = workflow
 
-        candidate_result = MagicMock()
-        candidate_result.scalars.return_value.all.return_value = []
-
         # Windows: 1 completed, 1 failed, 1 pending (not all processed)
+        # This query happens BEFORE candidate query in the reordered finalizer
         window_result = MagicMock()
         window_result.fetchall.return_value = [
             ("completed",), ("failed",), ("pending",)
         ]
 
+        # With new ordering, early finalizer returns not_ready BEFORE
+        # candidate query is executed, so no candidate_result needed
         mock_session.execute.side_effect = [
             run_result,
             workflow_result,
-            candidate_result,
             window_result,
         ]
 
@@ -425,17 +424,17 @@ class TestFinalizerEdgeCases:
         workflow_result = MagicMock()
         workflow_result.scalar_one_or_none.return_value = workflow
 
-        candidate_result = MagicMock()
-        candidate_result.scalars.return_value.all.return_value = []
-
         window_result = MagicMock()
         window_result.fetchall.return_value = [("completed",)]
+
+        candidate_result = MagicMock()
+        candidate_result.scalars.return_value.all.return_value = []
 
         mock_session.execute.side_effect = [
             run_result,
             workflow_result,
-            candidate_result,
             window_result,
+            candidate_result,
         ]
 
         mock_workflow_service = MagicMock()
@@ -453,4 +452,283 @@ class TestFinalizerEdgeCases:
         # Workflow service transition_status should be called
         mock_workflow_service.transition_status.assert_called_once_with(
             workflow_id, "awaiting_selection"
+        )
+
+
+class TestFinalizerReadinessBeforeDedup:
+    """Tests for finalizer ordering - readiness check before dedup/config parsing."""
+
+    @pytest.mark.asyncio
+    async def test_early_finalizer_does_not_parse_execution_config(self):
+        """Early finalizer with pending windows must NOT parse execution config."""
+        from app.tasks.discovery_tasks import _finalize_discovery
+
+        run_id = uuid4()
+        workflow_id = uuid4()
+
+        # Run has invalid config that would fail parsing
+        run = DiscoveryRun(
+            id=run_id,
+            workflow_id=workflow_id,
+            status="running",
+            total_windows=3,
+            processed_windows=0,
+            completed_windows=0,
+            failed_windows=0,
+            total_candidates=0,
+            config_snapshot='{"invalid": "config"}',  # Would fail parsing
+        )
+
+        workflow = ClipWorkflow(
+            id=workflow_id,
+            source_id=uuid4(),
+            status="discovering",
+        )
+
+        mock_session = AsyncMock()
+        run_result = MagicMock()
+        run_result.scalar_one_or_none.return_value = run
+
+        workflow_result = MagicMock()
+        workflow_result.scalar_one_or_none.return_value = workflow
+
+        # Windows: 1 completed, 2 pending (not all processed)
+        window_result = MagicMock()
+        window_result.fetchall.return_value = [
+            ("completed",), ("pending",), ("pending",)
+        ]
+
+        mock_session.execute.side_effect = [
+            run_result,
+            workflow_result,
+            window_result,
+        ]
+
+        with patch("app.tasks.discovery_tasks.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "app.tasks.discovery_tasks.parse_execution_config"
+            ) as mock_parse:
+                result = await _finalize_discovery(run_id)
+
+        # Early finalizer returns not_ready without parsing config
+        assert result["status"] == "not_ready"
+        mock_parse.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_early_finalizer_does_not_run_dedup(self):
+        """Early finalizer with processing windows must NOT run deduplication."""
+        from app.tasks.discovery_tasks import _finalize_discovery
+
+        run_id = uuid4()
+        workflow_id = uuid4()
+
+        run = DiscoveryRun(
+            id=run_id,
+            workflow_id=workflow_id,
+            status="running",
+            total_windows=2,
+            processed_windows=0,
+            completed_windows=0,
+            failed_windows=0,
+            total_candidates=5,
+            config_snapshot=make_valid_config_snapshot(),
+        )
+
+        workflow = ClipWorkflow(
+            id=workflow_id,
+            source_id=uuid4(),
+            status="discovering",
+        )
+
+        mock_session = AsyncMock()
+        run_result = MagicMock()
+        run_result.scalar_one_or_none.return_value = run
+
+        workflow_result = MagicMock()
+        workflow_result.scalar_one_or_none.return_value = workflow
+
+        # Windows: 1 processing, 1 pending (not all processed)
+        window_result = MagicMock()
+        window_result.fetchall.return_value = [("processing",), ("pending",)]
+
+        mock_session.execute.side_effect = [
+            run_result,
+            workflow_result,
+            window_result,
+        ]
+
+        with patch("app.tasks.discovery_tasks.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "app.services.candidate_deduplicator.CandidateDeduplicator"
+            ) as mock_dedup_class:
+                result = await _finalize_discovery(run_id)
+
+        # Early finalizer returns not_ready without running dedup
+        assert result["status"] == "not_ready"
+        mock_dedup_class.assert_not_called()
+
+
+class TestFinalizerCounterReconciliation:
+    """Tests for finalizer counter reconciliation from window truth."""
+
+    @pytest.mark.asyncio
+    async def test_finalizer_repairs_counters_from_window_truth(self):
+        """Finalizer repairs persisted counters from authoritative window statuses."""
+        from app.tasks.discovery_tasks import _finalize_discovery
+
+        run_id = uuid4()
+        workflow_id = uuid4()
+
+        # Persisted counters are wrong (drifted)
+        run = DiscoveryRun(
+            id=run_id,
+            workflow_id=workflow_id,
+            status="running",
+            total_windows=8,
+            processed_windows=1,  # Wrong
+            completed_windows=1,  # Wrong
+            failed_windows=0,  # Wrong
+            total_candidates=10,
+            config_snapshot=make_valid_config_snapshot(),
+        )
+
+        workflow = ClipWorkflow(
+            id=workflow_id,
+            source_id=uuid4(),
+            status="discovering",
+        )
+
+        mock_session = AsyncMock()
+        run_result = MagicMock()
+        run_result.scalar_one_or_none.return_value = run
+
+        workflow_result = MagicMock()
+        workflow_result.scalar_one_or_none.return_value = workflow
+
+        # Authoritative windows: 7 completed, 1 failed
+        window_result = MagicMock()
+        window_result.fetchall.return_value = [
+            ("completed",), ("completed",), ("completed",), ("completed",),
+            ("completed",), ("completed",), ("completed",), ("failed",),
+        ]
+
+        candidate_result = MagicMock()
+        candidate_result.scalars.return_value.all.return_value = []
+
+        mock_session.execute.side_effect = [
+            run_result,
+            workflow_result,
+            window_result,
+            candidate_result,
+        ]
+
+        mock_workflow_service = MagicMock()
+        mock_workflow_service.transition_status = AsyncMock()
+
+        with patch("app.tasks.discovery_tasks.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("app.tasks.discovery_tasks.ClipWorkflowService") as mock_service_class:
+                mock_service_class.return_value = mock_workflow_service
+
+                result = await _finalize_discovery(run_id)
+
+        # Counters reconciled from window truth
+        assert run.completed_windows == 7
+        assert run.failed_windows == 1
+        assert run.processed_windows == 8
+        assert run.status == "completed_with_errors"
+        assert result["status"] == "completed_with_errors"
+
+
+class TestFinalizerInvalidConfig:
+    """Tests for finalizer handling of invalid execution config."""
+
+    @pytest.mark.asyncio
+    async def test_finalizer_invalid_execution_config_never_uses_default_dedup(self):
+        """Invalid config_snapshot causes explicit failure, no default IoU fallback."""
+        from app.services.discovery_execution_config import ExecutionConfigError
+        from app.tasks.discovery_tasks import _finalize_discovery
+
+        run_id = uuid4()
+        workflow_id = uuid4()
+
+        run = DiscoveryRun(
+            id=run_id,
+            workflow_id=workflow_id,
+            status="running",
+            total_windows=2,
+            processed_windows=2,
+            completed_windows=2,
+            failed_windows=0,
+            total_candidates=5,
+            config_snapshot='{"invalid": "config"}',  # Invalid config
+        )
+
+        workflow = ClipWorkflow(
+            id=workflow_id,
+            source_id=uuid4(),
+            status="discovering",
+        )
+
+        mock_session = AsyncMock()
+        run_result = MagicMock()
+        run_result.scalar_one_or_none.return_value = run
+
+        workflow_result = MagicMock()
+        workflow_result.scalar_one_or_none.return_value = workflow
+
+        # All windows terminal
+        window_result = MagicMock()
+        window_result.fetchall.return_value = [("completed",), ("completed",)]
+
+        # Candidates exist - would trigger dedup if config was valid
+        candidate1 = MagicMock()
+        candidate1.id = uuid4()
+        candidate1.canonical_start_seconds = 0.0
+        candidate1.canonical_end_seconds = 60.0
+        candidate1.score_v1 = 0.8
+
+        candidate_result = MagicMock()
+        candidate_result.scalars.return_value.all.return_value = [candidate1]
+
+        mock_session.execute.side_effect = [
+            run_result,
+            workflow_result,
+            window_result,
+            candidate_result,
+        ]
+
+        mock_workflow_service = MagicMock()
+        mock_workflow_service.transition_status = AsyncMock()
+
+        with patch("app.tasks.discovery_tasks.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("app.tasks.discovery_tasks.ClipWorkflowService") as mock_service_class:
+                mock_service_class.return_value = mock_workflow_service
+
+                # parse_execution_config will raise ExecutionConfigError
+                with patch(
+                    "app.tasks.discovery_tasks.parse_execution_config"
+                ) as mock_parse:
+                    mock_parse.side_effect = ExecutionConfigError("Invalid config")
+
+                    result = await _finalize_discovery(run_id)
+
+        # Explicit failure, no dedup with default 0.5 threshold
+        assert result["status"] == "failed"
+        assert run.status == "failed"
+        assert "Invalid execution config" in run.error_message
+        # Workflow transitioned to failed, not awaiting_selection
+        mock_workflow_service.transition_status.assert_called_once_with(
+            workflow_id, "failed"
         )

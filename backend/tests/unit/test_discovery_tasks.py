@@ -784,3 +784,209 @@ class TestProcessWindowFailure:
                 assert result["status"] == "failed"
                 assert window.status == "failed"
                 assert "transcription_id" in window.error_message
+
+
+class TestRecoveryHealthyProcessingWithPending:
+    """Regression: healthy processing window + pending window must not dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_recovery_healthy_processing_with_pending_dispatches_nothing(self):
+        """When a healthy processing window exists alongside a pending window,
+        recovery must NOT dispatch the pending window."""
+        from app.tasks.discovery_tasks import _recover_stale_runs
+
+        run_id = uuid4()
+
+        run = DiscoveryRun(
+            id=run_id,
+            workflow_id=uuid4(),
+            status="running",
+            total_windows=2,
+            processed_windows=0,
+        )
+
+        # window0: processing and healthy (recent timestamp)
+        recent_time = datetime.now(UTC) - timedelta(seconds=60)
+        window0 = DiscoveryWindow(
+            id=uuid4(),
+            run_id=run_id,
+            window_index=0,
+            status="processing",
+            processing_started_at=recent_time,
+            attempt_count=0,
+        )
+
+        # window1: pending (should NOT be dispatched while window0 is healthy)
+        window1 = DiscoveryWindow(
+            id=uuid4(),
+            run_id=run_id,
+            window_index=1,
+            status="pending",
+            attempt_count=0,
+        )
+
+        mock_session = AsyncMock()
+        run_result = MagicMock()
+        run_result.scalars.return_value.all.return_value = [run]
+
+        # Processing windows query returns window0
+        processing_result = MagicMock()
+        processing_result.scalars.return_value.all.return_value = [window0]
+
+        mock_session.execute = AsyncMock(side_effect=[run_result, processing_result])
+
+        with patch("app.tasks.discovery_tasks.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("app.tasks.discovery_tasks.process_window") as mock_process:
+                mock_process.delay = MagicMock()
+
+                result = await _recover_stale_runs()
+
+        assert result["windows_dispatched"] == 0
+        mock_process.delay.assert_not_called()
+        # window1 remains pending (never queried)
+        assert window1.status == "pending"
+
+
+class TestRecoveryLostQueueDispatchesEarliestPending:
+    """Regression: lost-queue recovery dispatches only the earliest pending window."""
+
+    @pytest.mark.asyncio
+    async def test_recovery_lost_queue_dispatches_earliest_pending(self):
+        """When all processing is complete but pending windows exist (lost queue),
+        dispatch only the earliest pending window by index."""
+        from app.tasks.discovery_tasks import _recover_stale_runs
+
+        run_id = uuid4()
+
+        run = DiscoveryRun(
+            id=run_id,
+            workflow_id=uuid4(),
+            status="running",
+            total_windows=3,
+            processed_windows=1,
+        )
+
+        # window0: completed
+        # No processing windows in this scenario (lost queue - window0 completed
+        # but next window never dispatched)
+        window1 = DiscoveryWindow(
+            id=uuid4(),
+            run_id=run_id,
+            window_index=1,
+            status="pending",
+            attempt_count=0,
+        )
+        # Additional pending windows exist but only earliest is dispatched
+        _window2 = DiscoveryWindow(
+            id=uuid4(),
+            run_id=run_id,
+            window_index=2,
+            status="pending",
+            attempt_count=0,
+        )
+
+        mock_session = AsyncMock()
+        run_result = MagicMock()
+        run_result.scalars.return_value.all.return_value = [run]
+
+        # No processing windows
+        processing_result = MagicMock()
+        processing_result.scalars.return_value.all.return_value = []
+
+        # Pending windows query (ordered by index, limit 1) returns window1
+        pending_result = MagicMock()
+        pending_result.scalar_one_or_none.return_value = window1
+
+        mock_session.execute = AsyncMock(
+            side_effect=[run_result, processing_result, pending_result]
+        )
+
+        with patch("app.tasks.discovery_tasks.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("app.tasks.discovery_tasks.process_window") as mock_process:
+                mock_process.delay = MagicMock()
+
+                result = await _recover_stale_runs()
+
+        assert result["windows_dispatched"] == 1
+        # Only window1 (index=1, the earliest pending) should be dispatched
+        mock_process.delay.assert_called_once_with(str(window1.id), str(run_id))
+
+
+class TestRecoveryMultiplePendingDispatchesExactlyOne:
+    """Regression: multiple pending windows dispatch exactly one."""
+
+    @pytest.mark.asyncio
+    async def test_recovery_multiple_pending_dispatches_exactly_one(self):
+        """With multiple pending windows out of order, dispatch exactly one -
+        the earliest by window_index."""
+        from app.tasks.discovery_tasks import _recover_stale_runs
+
+        run_id = uuid4()
+
+        run = DiscoveryRun(
+            id=run_id,
+            workflow_id=uuid4(),
+            status="running",
+            total_windows=5,
+            processed_windows=1,
+        )
+
+        # Pending windows in non-sorted insertion order: index 4, 2, 3
+        # The query orders by window_index and limits to 1, so index 2 wins
+        window_idx2 = DiscoveryWindow(
+            id=uuid4(),
+            run_id=run_id,
+            window_index=2,
+            status="pending",
+            attempt_count=0,
+        )
+        # Additional pending windows (not returned by mock)
+        _window_idx3 = DiscoveryWindow(
+            id=uuid4(),
+            run_id=run_id,
+            window_index=3,
+            status="pending",
+            attempt_count=0,
+        )
+        _window_idx4 = DiscoveryWindow(
+            id=uuid4(),
+            run_id=run_id,
+            window_index=4,
+            status="pending",
+            attempt_count=0,
+        )
+
+        mock_session = AsyncMock()
+        run_result = MagicMock()
+        run_result.scalars.return_value.all.return_value = [run]
+
+        # No processing windows
+        processing_result = MagicMock()
+        processing_result.scalars.return_value.all.return_value = []
+
+        # Pending query ordered by window_index limit 1 returns window_idx2
+        pending_result = MagicMock()
+        pending_result.scalar_one_or_none.return_value = window_idx2
+
+        mock_session.execute = AsyncMock(
+            side_effect=[run_result, processing_result, pending_result]
+        )
+
+        with patch("app.tasks.discovery_tasks.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("app.tasks.discovery_tasks.process_window") as mock_process:
+                mock_process.delay = MagicMock()
+
+                result = await _recover_stale_runs()
+
+        assert result["windows_dispatched"] == 1
+        # Exactly one delay call, for the earliest pending (index 2)
+        mock_process.delay.assert_called_once_with(str(window_idx2.id), str(run_id))

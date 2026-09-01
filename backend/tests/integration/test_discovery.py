@@ -104,6 +104,28 @@ class TestDiscoveryEndpointLocation:
         # Mock the transcription response
         mock_media_indexer_client.get_transcription = AsyncMock(return_value=sample_transcription)
 
+        # CANONICAL endpoint: /v1/workflows/{workflow_id}/discover
+        response = await client_with_session.post(f"/v1/workflows/{workflow.id}/discover")
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        data = response.json()
+        assert data["workflow_id"] == str(workflow.id)
+        assert data["status"] == "running"
+
+
+class TestDeprecatedEndpointCompatibility:
+    """Compatibility test for the deprecated /v1/discovery/workflows endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_deprecated_discovery_endpoint_still_works(
+        self, setup_workflow_ready_for_discovery, mock_media_indexer_client, sample_transcription, client_with_session
+    ):
+        """DEPRECATED: /v1/discovery/workflows/{workflow_id}/discover still works for backwards compatibility."""
+        workflow, source = setup_workflow_ready_for_discovery
+
+        mock_media_indexer_client.get_transcription = AsyncMock(return_value=sample_transcription)
+
+        # DEPRECATED endpoint - still works but clients should migrate to canonical
         response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
 
         assert response.status_code == status.HTTP_202_ACCEPTED
@@ -139,7 +161,7 @@ class TestDurationBasedWindows:
         )
         mock_media_indexer_client.get_transcription = AsyncMock(return_value=transcription)
 
-        response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
+        response = await client_with_session.post(f"/v1/workflows/{workflow.id}/discover")
 
         assert response.status_code == status.HTTP_202_ACCEPTED
         data = response.json()
@@ -174,7 +196,7 @@ class TestDurationBasedWindows:
         )
         mock_media_indexer_client.get_transcription = AsyncMock(return_value=transcription)
 
-        response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
+        response = await client_with_session.post(f"/v1/workflows/{workflow.id}/discover")
 
         assert response.status_code == status.HTTP_202_ACCEPTED
         data = response.json()
@@ -196,13 +218,13 @@ class TestIdempotencyWithConflict:
 
         # First request
         response1 = await client_with_session.post(
-            f"/v1/discovery/workflows/{workflow.id}/discover",
+            f"/v1/workflows/{workflow.id}/discover",
             headers={"Idempotency-Key": idempotency_key},
         )
 
         # Second request with same key
         response2 = await client_with_session.post(
-            f"/v1/discovery/workflows/{workflow.id}/discover",
+            f"/v1/workflows/{workflow.id}/discover",
             headers={"Idempotency-Key": idempotency_key},
         )
 
@@ -286,13 +308,13 @@ class TestIdempotencyWithConflict:
 
         # First request
         response1 = await client_with_session.post(
-            f"/v1/discovery/workflows/{workflow1.id}/discover",
+            f"/v1/workflows/{workflow1.id}/discover",
             headers={"Idempotency-Key": idempotency_key},
         )
 
         # Second request with same key but different source (different config)
         response2 = await client_with_session.post(
-            f"/v1/discovery/workflows/{workflow2.id}/discover",
+            f"/v1/workflows/{workflow2.id}/discover",
             headers={"Idempotency-Key": idempotency_key},
         )
 
@@ -311,7 +333,7 @@ class TestWorkflowTransitions:
         workflow, source = setup_workflow_ready_for_discovery
         mock_media_indexer_client.get_transcription = AsyncMock(return_value=sample_transcription)
 
-        response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
+        response = await client_with_session.post(f"/v1/workflows/{workflow.id}/discover")
 
         assert response.status_code == status.HTTP_202_ACCEPTED
 
@@ -329,7 +351,7 @@ class TestErrorHandling:
         """Test 404 when workflow doesn't exist."""
         fake_workflow_id = uuid4()
 
-        response = await client_with_session.post(f"/v1/discovery/workflows/{fake_workflow_id}/discover")
+        response = await client_with_session.post(f"/v1/workflows/{fake_workflow_id}/discover")
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
@@ -352,7 +374,7 @@ class TestErrorHandling:
         session.add(workflow)
         await session.commit()
 
-        response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
+        response = await client_with_session.post(f"/v1/workflows/{workflow.id}/discover")
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert "must be ready_for_discovery" in response.json()["detail"]
@@ -377,7 +399,7 @@ class TestErrorHandling:
         session.add(workflow)
         await session.commit()
 
-        response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
+        response = await client_with_session.post(f"/v1/workflows/{workflow.id}/discover")
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert "no transcription_id" in response.json()["detail"]
@@ -405,7 +427,7 @@ class TestErrorHandling:
         )
         mock_media_indexer_client.get_transcription = AsyncMock(return_value=transcription)
 
-        response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
+        response = await client_with_session.post(f"/v1/workflows/{workflow.id}/discover")
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert "no valid duration" in response.json()["detail"]
@@ -422,7 +444,7 @@ class TestCanonicalFingerprint:
         workflow, source = setup_workflow_ready_for_discovery
         mock_media_indexer_client.get_transcription = AsyncMock(return_value=sample_transcription)
 
-        response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
+        response = await client_with_session.post(f"/v1/workflows/{workflow.id}/discover")
 
         assert response.status_code == status.HTTP_202_ACCEPTED
         data = response.json()
@@ -446,7 +468,7 @@ class TestBootstrapScheduling:
         with patch("app.tasks.discovery_tasks.process_window") as mock_process_window:
             mock_process_window.delay = MagicMock()
 
-            response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
+            response = await client_with_session.post(f"/v1/workflows/{workflow.id}/discover")
 
             assert response.status_code == status.HTTP_202_ACCEPTED
 
@@ -481,7 +503,7 @@ class TestWindowOverlap:
         )
         mock_media_indexer_client.get_transcription = AsyncMock(return_value=transcription)
 
-        response = await client_with_session.post(f"/v1/discovery/workflows/{workflow.id}/discover")
+        response = await client_with_session.post(f"/v1/workflows/{workflow.id}/discover")
 
         assert response.status_code == status.HTTP_202_ACCEPTED
         run_id = response.json()["id"]

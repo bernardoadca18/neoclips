@@ -601,7 +601,46 @@ async def _finalize_discovery(run_id: UUID) -> dict[str, Any]:
             await session.commit()
             return {"error": "Workflow not found", "status": "failed"}
 
-        # Deduplicate candidates
+        # Query authoritative DiscoveryWindow statuses BEFORE any config/dedup work.
+        # A premature finalizer must never parse execution config or run dedup on a
+        # run that is not ready, otherwise it could fail a healthy in-progress run.
+        result = await session.execute(
+            select(DiscoveryWindow.status)
+            .where(DiscoveryWindow.run_id == run_id)
+        )
+        window_statuses = [row[0] for row in result.fetchall()]
+
+        actual_completed = sum(1 for s in window_statuses if s == "completed")
+        actual_failed = sum(1 for s in window_statuses if s == "failed")
+        actual_processing = sum(1 for s in window_statuses if s == "processing")
+        actual_pending = sum(1 for s in window_statuses if s == "pending")
+        actual_processed = actual_completed + actual_failed
+        total_windows = len(window_statuses)
+
+        # Early finalization - run is NOT ready yet.
+        # Do NOT parse execution config, do NOT run dedup, do NOT mutate
+        # run/workflow/candidates. Just return not_ready.
+        if actual_processed != total_windows:
+            logger.warning(
+                f"Finalizer called early for run {run_id}: "
+                f"{actual_processed}/{total_windows} processed "
+                f"(pending={actual_pending}, processing={actual_processing})"
+            )
+            return {
+                "status": "not_ready",
+                "run_id": str(run_id),
+                "pending": actual_pending,
+                "processing": actual_processing,
+                "completed": actual_completed,
+                "failed": actual_failed,
+            }
+
+        # Reconcile persisted counters from authoritative window truth.
+        run.completed_windows = actual_completed
+        run.failed_windows = actual_failed
+        run.processed_windows = actual_processed
+
+        # Deduplicate candidates using persisted execution config.
         from app.services.candidate_deduplicator import CandidateDeduplicator, CandidateForDedup
 
         result = await session.execute(
@@ -651,43 +690,8 @@ async def _finalize_discovery(run_id: UUID) -> dict[str, Any]:
                         candidate.duplicate_of_id = dedup_result.duplicate_of_id
                         candidate.updated_at = datetime.now(UTC)
 
-        # Reconcile counters from database (authoritative source)
-        result = await session.execute(
-            select(DiscoveryWindow.status)
-            .where(DiscoveryWindow.run_id == run_id)
-        )
-        window_statuses = [row[0] for row in result.fetchall()]
-
-        actual_completed = sum(1 for s in window_statuses if s == "completed")
-        actual_failed = sum(1 for s in window_statuses if s == "failed")
-        actual_processing = sum(1 for s in window_statuses if s == "processing")
-        actual_pending = sum(1 for s in window_statuses if s == "pending")
-        actual_processed = actual_completed + actual_failed
-        total_windows = len(window_statuses)
-
-        # Early finalization - run is NOT ready yet
-        # Do NOT mutate run into failed state - just return not_ready
-        if actual_processed != total_windows:
-            logger.warning(
-                f"Finalizer called early for run {run_id}: "
-                f"{actual_processed}/{total_windows} processed "
-                f"(pending={actual_pending}, processing={actual_processing})"
-            )
-            # Run remains "running", workflow remains "discovering"
-            # Return not_ready without mutating state
-            return {
-                "status": "not_ready",
-                "run_id": str(run_id),
-                "pending": actual_pending,
-                "processing": actual_processing,
-                "completed": actual_completed,
-                "failed": actual_failed,
-            }
-
-        # Update counters with reconciled values
-        run.completed_windows = actual_completed
-        run.failed_windows = actual_failed
-        run.processed_windows = actual_processed
+        failed_windows = actual_failed
+        completed_windows = actual_completed
 
         failed_windows = actual_failed
         completed_windows = actual_completed
