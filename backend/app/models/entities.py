@@ -173,7 +173,7 @@ class ClipWorkflow(Base, UUIDPrimaryKey, TimestampMixin):
         CheckConstraint(
             """status IN (
                 'created', 'discovering', 'observing',
-                'reranking', 'awaiting_selection', 'rendering', 'packaging', 'qa',
+                'reranking', 'awaiting_selection', 'planning', 'rendering', 'packaging', 'qa',
                 'ready_for_review', 'blocked', 'failed', 'cancelled'
             )""",
             name="ck_clip_workflow_status",
@@ -411,6 +411,12 @@ class ClipCandidate(Base, UUIDPrimaryKey, TimestampMixin):
     # Relationships
     run: Mapped["DiscoveryRun"] = relationship("DiscoveryRun", back_populates="candidates")
     window: Mapped["DiscoveryWindow"] = relationship("DiscoveryWindow", back_populates="candidates")
+    editorial_analyses: Mapped[list["EditorialSuitabilityAnalysis"]] = relationship(
+        "EditorialSuitabilityAnalysis", back_populates="candidate", cascade="all, delete-orphan"
+    )
+    editorial_plans: Mapped[list["ShortEditorialPlan"]] = relationship(
+        "ShortEditorialPlan", back_populates="candidate", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -437,5 +443,204 @@ class ClipCandidate(Base, UUIDPrimaryKey, TimestampMixin):
         UniqueConstraint(
             "run_id", "candidate_fingerprint",
             name="uq_clip_candidates_fingerprint"
+        ),
+    )
+
+
+class EditorialSuitabilityAnalysis(Base, UUIDPrimaryKey, TimestampMixin):
+    """
+    Represents an editorial suitability analysis for a ClipCandidate.
+
+    This is a versioned evaluation of whether a candidate works as
+    standalone content, with structured output from the LLM including
+    recommended editorial strategy.
+    """
+
+    __tablename__ = "editorial_suitability_analyses"
+
+    # Core relationships
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clip_candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clip_sources.id", ondelete="SET NULL"), nullable=True
+    )
+    transcription_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+    # Identity and versioning
+    strategy_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    strategy_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    prompt_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    prompt_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)  # SHA-256
+
+    # Configuration snapshot
+    config_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)  # SHA-256
+
+    # 9Router configuration
+    requested_combo: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    resolved_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # Context boundaries used for this analysis
+    context_before_seconds: Mapped[float] = mapped_column(Float, nullable=False, server_default="45.0")
+    context_after_seconds: Mapped[float] = mapped_column(Float, nullable=False, server_default="40.0")
+
+    # Status
+    status: Mapped[str] = mapped_column(String(50), nullable=False, server_default="pending")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Analysis results (structured output from LLM)
+    standalone_score: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0-100
+    context_dependency: Mapped[str | None] = mapped_column(String(20), nullable=True)  # none, low, medium, high, critical
+    hook_strength: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0-100
+    payoff_strength: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0-100
+    ending_completeness: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0-100
+
+    # Reference dependency details
+    reference_dependency_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    reference_dependency_examples: Mapped[dict[str, typing.Any] | None] = mapped_column(Text, nullable=True)  # JSON
+
+    # Editorial recommendation
+    recommended_strategy: Mapped[str | None] = mapped_column(String(50), nullable=True)  # USE_DIRECTLY, TRIM, ADD_CONTEXT, REAUTHOR, REJECT
+    recommended_start_segment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    recommended_end_segment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    analysis_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Raw response for debugging
+    raw_llm_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Timing
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+
+    # Relationships
+    candidate: Mapped["ClipCandidate"] = relationship("ClipCandidate", back_populates="editorial_analyses")
+    editorial_plans: Mapped[list["ShortEditorialPlan"]] = relationship(
+        "ShortEditorialPlan", back_populates="analysis", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'completed', 'failed')",
+            name="ck_editorial_analysis_status",
+        ),
+        CheckConstraint(
+            "standalone_score IS NULL OR (standalone_score >= 0 AND standalone_score <= 100)",
+            name="ck_editorial_analysis_standalone_score",
+        ),
+        CheckConstraint(
+            "hook_strength IS NULL OR (hook_strength >= 0 AND hook_strength <= 100)",
+            name="ck_editorial_analysis_hook_strength",
+        ),
+        CheckConstraint(
+            "payoff_strength IS NULL OR (payoff_strength >= 0 AND payoff_strength <= 100)",
+            name="ck_editorial_analysis_payoff_strength",
+        ),
+        CheckConstraint(
+            "ending_completeness IS NULL OR (ending_completeness >= 0 AND ending_completeness <= 100)",
+            name="ck_editorial_analysis_ending_completeness",
+        ),
+        CheckConstraint(
+            "context_dependency IS NULL OR context_dependency IN ('none', 'low', 'medium', 'high', 'critical')",
+            name="ck_editorial_analysis_context_dependency",
+        ),
+        CheckConstraint(
+            "reference_dependency_level IS NULL OR reference_dependency_level IN ('none', 'low', 'medium', 'high', 'critical')",
+            name="ck_editorial_analysis_reference_dependency",
+        ),
+        CheckConstraint(
+            "recommended_strategy IS NULL OR recommended_strategy IN ('USE_DIRECTLY', 'TRIM', 'ADD_CONTEXT', 'REAUTHOR', 'REJECT')",
+            name="ck_editorial_analysis_recommended_strategy",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_editorial_analysis_attempt_count",
+        ),
+    )
+
+
+class ShortEditorialPlan(Base, UUIDPrimaryKey, TimestampMixin):
+    """
+    Represents an editorial plan for producing a Short from a ClipCandidate.
+
+    This is the contract between Stage 4 (Editorial) and Stage 5 (Composition).
+    It captures the editorial decision and boundaries for the final clip.
+    """
+
+    __tablename__ = "short_editorial_plans"
+
+    # Lineage - all required for provenance
+    workflow_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clip_workflows.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clip_sources.id", ondelete="SET NULL"), nullable=True
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clip_candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    analysis_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("editorial_suitability_analyses.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Editorial strategy
+    strategy: Mapped[str] = mapped_column(String(50), nullable=False)
+    decision_source: Mapped[str] = mapped_column(String(50), nullable=False, server_default="model_recommendation")
+
+    # Final boundaries (canonicalized from segment IDs)
+    source_start_segment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    source_end_segment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    source_start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    source_end_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # Human override tracking
+    recommended_strategy: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    recommended_start_segment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    recommended_end_segment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+    # Rejection reason (for REJECT strategy)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Plan status
+    status: Mapped[str] = mapped_column(String(50), nullable=False, server_default="draft")
+
+    # Versioning and fingerprint
+    plan_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    config_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)  # SHA-256
+
+    # Relationships
+    candidate: Mapped["ClipCandidate"] = relationship("ClipCandidate", back_populates="editorial_plans")
+    analysis: Mapped["EditorialSuitabilityAnalysis | None"] = relationship(
+        "EditorialSuitabilityAnalysis", back_populates="editorial_plans"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "strategy IN ('USE_DIRECTLY', 'TRIM', 'ADD_CONTEXT', 'REAUTHOR', 'REJECT')",
+            name="ck_short_editorial_plan_strategy",
+        ),
+        CheckConstraint(
+            "decision_source IN ('model_recommendation', 'human_override')",
+            name="ck_short_editorial_plan_decision_source",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'ready', 'rejected', 'invalidated')",
+            name="ck_short_editorial_plan_status",
+        ),
+        CheckConstraint(
+            "source_start_seconds >= 0",
+            name="ck_short_editorial_plan_start",
+        ),
+        CheckConstraint(
+            "source_end_seconds > source_start_seconds",
+            name="ck_short_editorial_plan_end_after_start",
+        ),
+        CheckConstraint(
+            "duration_seconds > 0",
+            name="ck_short_editorial_plan_duration_positive",
         ),
     )

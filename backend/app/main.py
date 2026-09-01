@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routers import (
     discovery_router,
+    editorial_router,
     health_router,
     policies_router,
     sources_router,
@@ -56,6 +57,7 @@ app.include_router(policies_router)
 app.include_router(sources_router)
 app.include_router(workflows_router)
 app.include_router(discovery_router)
+app.include_router(editorial_router)
 
 
 @app.get("/", include_in_schema=False)

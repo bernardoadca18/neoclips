@@ -30,9 +30,22 @@ def test_terminal_states_have_no_transitions():
     assert len(VALID_TRANSITIONS["blocked"]) == 0
 
 
-def test_awaiting_selection_can_only_transition_to_rendering_or_cancelled():
-    """awaiting_selection has limited valid transitions."""
+def test_awaiting_selection_can_only_transition_to_planning_or_cancelled():
+    """awaiting_selection has limited valid transitions.
+
+    Stage 4 adds 'planning' state for editorial analysis and plan creation.
+    awaiting_selection transitions to planning, then planning transitions to rendering.
+    """
     valid = VALID_TRANSITIONS["awaiting_selection"]
-    assert "rendering" in valid
+    assert "planning" in valid
     assert "cancelled" in valid
     assert len(valid) == 2
+
+
+def test_planning_can_transition_to_rendering_failed_or_cancelled():
+    """planning state supports transitions to rendering, failed, or cancelled."""
+    valid = VALID_TRANSITIONS["planning"]
+    assert "rendering" in valid
+    assert "failed" in valid
+    assert "cancelled" in valid
+    assert len(valid) == 3

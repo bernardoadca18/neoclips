@@ -43,12 +43,14 @@ class IdempotencyConflictError(Exception):
 # NOTE: ClipWorkflow starts at 'created' and waits for ClipSource to reach 'ready_for_discovery'
 # ClipSource owns Media Indexer pipeline states (ingesting, transcribing)
 # ClipWorkflow owns Clip Discovery pipeline states (discovering onwards)
+# Stage 4 adds 'planning' state for editorial analysis and plan creation
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "created": {"discovering", "cancelled"},  # Can only start discovering when source is ready
     "discovering": {"observing", "reranking", "awaiting_selection", "failed", "cancelled"},
     "observing": {"reranking", "awaiting_selection", "failed", "cancelled"},
     "reranking": {"awaiting_selection", "failed", "cancelled"},
-    "awaiting_selection": {"rendering", "cancelled"},
+    "awaiting_selection": {"planning", "cancelled"},  # Stage 4: transition to planning for editorial
+    "planning": {"rendering", "failed", "cancelled"},  # Stage 4: editorial analysis and plan creation
     "rendering": {"packaging", "failed", "cancelled"},
     "packaging": {"qa", "failed", "cancelled"},
     "qa": {"ready_for_review", "failed", "blocked", "cancelled"},

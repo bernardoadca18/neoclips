@@ -66,6 +66,10 @@ class Settings(BaseSettings):
         default="neoclips-discovery",
         description="9Router Combo alias for clip discovery"
     )
+    nine_router_editorial_combo: str = Field(
+        default="neoclips-editorial",
+        description="9Router Combo alias for editorial suitability analysis"
+    )
 
     @field_validator("log_level")
     @classmethod
