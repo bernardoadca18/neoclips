@@ -218,7 +218,6 @@ class DiscoveryBootstrapService:
         prompt_id: str = "clip_discovery_v1",
         prompt_version: str = "1.0.0",
         llm_model: str | None = None,
-        llm_provider: str | None = None,
         temperature: float = 0.3,
         max_candidates_per_window: int = 10,
     ) -> DiscoveryBootstrapResult:

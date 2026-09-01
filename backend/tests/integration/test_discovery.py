@@ -212,7 +212,7 @@ class TestIdempotencyWithConflict:
 
     @pytest.mark.asyncio
     async def test_same_idempotency_key_different_config_returns_409(
-        self, session: AsyncSession, mock_media_indexer_client, sample_transcription, client_with_session
+        self, session: AsyncSession, mock_media_indexer_client, client_with_session
     ):
         """Test that same idempotency key with different config returns 409."""
         # Create first workflow

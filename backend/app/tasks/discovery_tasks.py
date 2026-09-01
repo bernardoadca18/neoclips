@@ -189,6 +189,19 @@ async def _process_window(window_id: UUID, run_id: UUID) -> dict[str, Any]:
             else:
                 # No processing_started_at but status is processing - data corruption
                 logger.warning(f"Window {window_id} has no processing_started_at but is processing")
+                # Check attempt limit before recovering from corrupt state
+                if window.attempt_count >= MAX_WINDOW_ATTEMPTS:
+                    logger.error(
+                        f"Window {window_id} exceeded max attempts ({MAX_WINDOW_ATTEMPTS}) "
+                        "in corrupt state, marking failed"
+                    )
+                    window.status = "failed"
+                    window.error_message = f"Exceeded max recovery attempts ({MAX_WINDOW_ATTEMPTS})"
+                    window.updated_at = datetime.now(UTC)
+                    await _increment_failed_windows(session, run_id)
+                    await session.commit()
+                    await _schedule_next_or_finalizer(session, run_id)
+                    return {"status": "failed", "window_id": str(window_id), "error": "max_attempts_exceeded"}
                 window.attempt_count += 1
 
         # Skip already completed windows (idempotency)

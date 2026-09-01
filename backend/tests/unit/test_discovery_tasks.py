@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.models.entities import ClipCandidate, ClipSource, ClipWorkflow, DiscoveryRun, DiscoveryWindow
+from app.models.entities import ClipSource, ClipWorkflow, DiscoveryRun, DiscoveryWindow
 from app.tasks.discovery_tasks import (
     STALE_WINDOW_TIMEOUT_SECONDS,
     _schedule_next_or_finalizer,
@@ -125,7 +125,7 @@ class TestProcessWindowStaleRecovery:
     """Tests for stale window recovery."""
 
     @pytest.mark.asyncio
-    async def test_stale_window_is_recovered(self, mock_session_factory, mock_settings):
+    async def test_stale_window_is_recovered(self, mock_session_factory):
         """Window stuck in processing for > 10min is recovered."""
         run_id = uuid4()
         window_id = uuid4()
@@ -271,6 +271,308 @@ class TestProcessWindowIdempotency:
             # Verify schedule_next was called
             mock_schedule.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_failed_window_not_resurrected(self, mock_session_factory):
+        """Already failed window must NOT be reprocessed - terminal state."""
+        window_id = uuid4()
+        run_id = uuid4()
+
+        window = DiscoveryWindow(
+            id=window_id,
+            run_id=run_id,
+            window_index=0,
+            start_seconds=0,
+            end_seconds=300,
+            status="failed",
+            error_message="Previous failure",
+            attempt_count=2,
+        )
+
+        window_result = MagicMock()
+        window_result.scalar_one_or_none.return_value = window
+        mock_session_factory.execute = AsyncMock(return_value=window_result)
+
+        from app.tasks.discovery_tasks import _process_window
+
+        result = await _process_window(window_id, run_id)
+
+        # Must return already_failed, not attempt reprocessing
+        assert result["status"] == "already_failed"
+        assert result["window_id"] == str(window_id)
+        # Window state must remain unchanged
+        assert window.status == "failed"
+        assert window.error_message == "Previous failure"
+        assert window.attempt_count == 2  # No increment
+
+
+class TestRecoverStaleRuns:
+    """Tests for _recover_stale_runs function."""
+
+    @pytest.mark.asyncio
+    async def test_recover_stale_processing_window(self):
+        """Stale processing window is recovered and redispatched."""
+        from app.tasks.discovery_tasks import _recover_stale_runs
+
+        run_id = uuid4()
+        window_id = uuid4()
+
+        run = DiscoveryRun(
+            id=run_id,
+            workflow_id=uuid4(),
+            status="running",
+            total_windows=1,
+            processed_windows=0,
+        )
+
+        # Window processing for 15 minutes (stale)
+        stale_time = datetime.now(UTC) - timedelta(minutes=15)
+        window = DiscoveryWindow(
+            id=window_id,
+            run_id=run_id,
+            window_index=0,
+            status="processing",
+            processing_started_at=stale_time,
+            attempt_count=1,
+        )
+
+        mock_session = AsyncMock()
+        run_result = MagicMock()
+        run_result.scalars.return_value.all.return_value = [run]
+
+        window_result = MagicMock()
+        window_result.scalars.return_value.all.return_value = [window]
+
+        # Need to provide results for: runs query, windows query, pending windows query
+        mock_session.execute = AsyncMock(side_effect=[run_result, window_result, MagicMock()])
+
+        with patch("app.tasks.discovery_tasks.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("app.tasks.discovery_tasks.process_window") as mock_process:
+                mock_process.delay = MagicMock()
+
+                result = await _recover_stale_runs()
+
+        assert result["windows_recovered"] == 1
+        assert window.status == "pending"
+        assert window.processing_started_at is None
+        assert window.attempt_count == 2
+
+    @pytest.mark.asyncio
+    async def test_mark_failed_after_max_attempts(self):
+        """Window exceeding MAX_WINDOW_ATTEMPTS is marked failed, not recovered."""
+        from app.tasks.discovery_tasks import _recover_stale_runs
+
+        run_id = uuid4()
+        window_id = uuid4()
+
+        run = DiscoveryRun(
+            id=run_id,
+            workflow_id=uuid4(),
+            status="running",
+            total_windows=1,
+            processed_windows=0,
+            failed_windows=0,
+        )
+
+        # Window at max attempts
+        stale_time = datetime.now(UTC) - timedelta(minutes=15)
+        window = DiscoveryWindow(
+            id=window_id,
+            run_id=run_id,
+            window_index=0,
+            status="processing",
+            processing_started_at=stale_time,
+            attempt_count=3,  # MAX_WINDOW_ATTEMPTS
+        )
+
+        mock_session = AsyncMock()
+        run_result = MagicMock()
+        run_result.scalars.return_value.all.return_value = [run]
+
+        window_result = MagicMock()
+        window_result.scalars.return_value.all.return_value = [window]
+
+        # runs query, windows query, pending windows query, increment_failed update
+        mock_session.execute = AsyncMock(side_effect=[
+            run_result, window_result, MagicMock(), MagicMock()
+        ])
+
+        with patch("app.tasks.discovery_tasks.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            result = await _recover_stale_runs()
+
+        assert result["windows_recovered"] == 0
+        assert window.status == "failed"
+        assert "Exceeded max recovery attempts" in window.error_message
+
+    @pytest.mark.asyncio
+    async def test_corrupt_window_no_timestamp_respects_max_attempts(self):
+        """Corrupt window (no timestamp) respects MAX_WINDOW_ATTEMPTS bound."""
+        from app.tasks.discovery_tasks import _recover_stale_runs
+
+        run_id = uuid4()
+        window_id = uuid4()
+
+        run = DiscoveryRun(
+            id=run_id,
+            workflow_id=uuid4(),
+            status="running",
+            total_windows=1,
+            processed_windows=0,
+            failed_windows=0,
+        )
+
+        # Corrupt: processing but no timestamp
+        window = DiscoveryWindow(
+            id=window_id,
+            run_id=run_id,
+            window_index=0,
+            status="processing",
+            processing_started_at=None,  # Corrupt state
+            attempt_count=3,  # MAX_WINDOW_ATTEMPTS
+        )
+
+        mock_session = AsyncMock()
+        run_result = MagicMock()
+        run_result.scalars.return_value.all.return_value = [run]
+
+        window_result = MagicMock()
+        window_result.scalars.return_value.all.return_value = [window]
+
+        # runs query, windows query, pending windows query, increment_failed update
+        mock_session.execute = AsyncMock(side_effect=[
+            run_result, window_result, MagicMock(), MagicMock()
+        ])
+
+        with patch("app.tasks.discovery_tasks.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            result = await _recover_stale_runs()
+
+        assert result["windows_recovered"] == 0
+        assert window.status == "failed"
+        assert "Exceeded max recovery attempts" in window.error_message
+
+    @pytest.mark.asyncio
+    async def test_healthy_processing_window_not_recovered(self):
+        """Healthy processing window (within timeout) is not recovered."""
+        from app.tasks.discovery_tasks import _recover_stale_runs
+
+        run_id = uuid4()
+        window_id = uuid4()
+
+        run = DiscoveryRun(
+            id=run_id,
+            workflow_id=uuid4(),
+            status="running",
+            total_windows=1,
+            processed_windows=0,
+        )
+
+        # Window processing for only 2 minutes (healthy)
+        healthy_time = datetime.now(UTC) - timedelta(minutes=2)
+        window = DiscoveryWindow(
+            id=window_id,
+            run_id=run_id,
+            window_index=0,
+            status="processing",
+            processing_started_at=healthy_time,
+            attempt_count=1,
+        )
+
+        mock_session = AsyncMock()
+        run_result = MagicMock()
+        run_result.scalars.return_value.all.return_value = [run]
+
+        window_result = MagicMock()
+        window_result.scalars.return_value.all.return_value = [window]
+
+        # runs query, windows query, pending windows query
+        mock_session.execute = AsyncMock(side_effect=[run_result, window_result, MagicMock()])
+
+        with patch("app.tasks.discovery_tasks.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            result = await _recover_stale_runs()
+
+        assert result["windows_recovered"] == 0
+        assert window.status == "processing"  # Unchanged
+
+    @pytest.mark.asyncio
+    async def test_pending_windows_dispatched(self):
+        """Pending windows are dispatched during recovery."""
+        from app.tasks.discovery_tasks import _recover_stale_runs
+
+        run_id = uuid4()
+        window_id = uuid4()
+
+        run = DiscoveryRun(
+            id=run_id,
+            workflow_id=uuid4(),
+            status="running",
+            total_windows=1,
+            processed_windows=0,
+        )
+
+        window = DiscoveryWindow(
+            id=window_id,
+            run_id=run_id,
+            window_index=0,
+            status="pending",
+            attempt_count=0,
+        )
+
+        mock_session = AsyncMock()
+        run_result = MagicMock()
+        run_result.scalars.return_value.all.return_value = [run]
+
+        window_result = MagicMock()
+        window_result.scalars.return_value.all.return_value = []  # No processing windows
+
+        # pending window query uses scalar_one_or_none
+        pending_result = MagicMock()
+        pending_result.scalar_one_or_none.return_value = window
+
+        mock_session.execute = AsyncMock(side_effect=[run_result, window_result, pending_result])
+
+        with patch("app.tasks.discovery_tasks.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("app.tasks.discovery_tasks.process_window") as mock_process:
+                mock_process.delay = MagicMock()
+
+                result = await _recover_stale_runs()
+
+        assert result["windows_dispatched"] == 1
+        mock_process.delay.assert_called_once_with(str(window_id), str(run_id))
+
+    @pytest.mark.asyncio
+    async def test_completed_run_not_recovered(self):
+        """Completed runs are not included in recovery."""
+        from app.tasks.discovery_tasks import _recover_stale_runs
+
+        mock_session = AsyncMock()
+        run_result = MagicMock()
+        run_result.scalars.return_value.all.return_value = []  # No running runs
+
+        mock_session.execute = AsyncMock(return_value=run_result)
+
+        with patch("app.tasks.discovery_tasks.async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            result = await _recover_stale_runs()
+
+        assert result["runs_recovered"] == 0
+        assert result["windows_recovered"] == 0
+
 
 class TestScheduleNextOrFinalizer:
     """Tests for cascading scheduling logic."""
@@ -364,7 +666,7 @@ class TestProcessWindowFailure:
     """Tests for window processing failure handling."""
 
     @pytest.mark.asyncio
-    async def test_source_not_found_marks_window_failed(self, mock_session_factory, mock_settings):
+    async def test_source_not_found_marks_window_failed(self, mock_session_factory):
         """Missing source marks window as failed."""
         window_id = uuid4()
         run_id = uuid4()
@@ -421,7 +723,7 @@ class TestProcessWindowFailure:
                 assert "Source not found" in window.error_message
 
     @pytest.mark.asyncio
-    async def test_no_transcription_id_marks_window_failed(self, mock_session_factory, mock_settings):
+    async def test_no_transcription_id_marks_window_failed(self, mock_session_factory):
         """Source without transcription_id marks window as failed."""
         window_id = uuid4()
         run_id = uuid4()

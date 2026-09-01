@@ -15,23 +15,21 @@ from hashlib import sha256
 
 import pytest
 
+from app.prompts.clip_discovery_prompts import get_clip_discovery_prompt
 from app.services.discovery_execution_config import (
-    DedupConfig,
+    MAX_WINDOW_ATTEMPTS,
+    SUPPORTED_DEDUP_VERSIONS,
+    SUPPORTED_SCORING_VERSIONS,
     DiscoveryExecutionConfig,
     ExecutionConfigError,
     LLMConfig,
-    MAX_WINDOW_ATTEMPTS,
-    parse_execution_config,
     PromptConfig,
     PromptHashMismatchError,
     PromptNotFoundError,
-    ScoringConfig,
-    SUPPORTED_DEDUP_VERSIONS,
-    SUPPORTED_SCORING_VERSIONS,
     UnsupportedVersionError,
     WindowConfig,
+    parse_execution_config,
 )
-from app.prompts.clip_discovery_prompts import get_clip_discovery_prompt
 
 
 @pytest.fixture

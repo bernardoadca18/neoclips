@@ -58,7 +58,6 @@ class TestFetchWindowSegmentsPaginated:
     async def test_multiple_pages_1500_segments(self):
         """Test pagination across 1500+ segments (multiple pages)."""
         transcription_id = uuid4()
-        page_size = 500
 
         # Create 1500 segments (3 full pages + partial 4th)
         all_segments = []
@@ -120,7 +119,6 @@ class TestFetchWindowSegmentsPaginated:
     async def test_page_boundary_segment(self):
         """Test segment at exact page boundary (offset 500, 1000, etc)."""
         transcription_id = uuid4()
-        page_size = 500
 
         # Create segments where one is exactly at page boundary
         # Page 0: segments 0-499 (starts 0-998s)
@@ -284,7 +282,6 @@ class TestFetchWindowSegmentsPaginated:
         transcription_id = uuid4()
 
         # Create exactly 1000 segments (2 full pages)
-        page_size = 500
         all_segments = []
         for i in range(1000):
             start = i * 2.0
