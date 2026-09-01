@@ -197,6 +197,11 @@ async def _process_window(window_id: UUID, run_id: UUID) -> dict[str, Any]:
             await _schedule_next_or_finalizer(session, run_id)
             return {"status": "already_completed", "window_id": str(window_id)}
 
+        # Skip already failed windows (idempotency) - do not resurrect terminal states
+        if window.status == "failed":
+            logger.info(f"Window {window_id} already failed, skipping duplicate delivery")
+            return {"status": "already_failed", "window_id": str(window_id)}
+
         # Get run
         result = await session.execute(
             select(DiscoveryRun).where(DiscoveryRun.id == run_id)
@@ -313,6 +318,7 @@ async def _process_window(window_id: UUID, run_id: UUID) -> dict[str, Any]:
             combo=exec_config.llm.combo,
             temperature=exec_config.llm.temperature,
             max_candidates_per_window=exec_config.llm.max_candidates_per_window,
+            system_prompt=exec_config.prompt.text,
         )
         source_duration = transcription.duration_seconds or window_segments[-1].end_seconds
         total_transcript_length = sum(len(seg.text) for seg in window_segments)
@@ -402,17 +408,19 @@ async def _process_window(window_id: UUID, run_id: UUID) -> dict[str, Any]:
                     )
 
                     # Use nested transaction (savepoint) to isolate candidate insert
-                    # Add candidate INSIDE savepoint, not before, for proper rollback semantics
-                    async with session.begin_nested():
-                        try:
+                    # Exception must be caught OUTSIDE nested context for proper savepoint rollback
+                    try:
+                        async with session.begin_nested():
                             session.add(candidate)
                             await session.flush()
-                            candidates_created += 1
-                        except IntegrityError:
-                            # Duplicate fingerprint - another concurrent task created it
-                            # Savepoint rollback only affects this candidate, not prior ones
-                            logger.debug(f"Duplicate candidate fingerprint {fingerprint[:8]}, skipping")
-                            continue
+
+                        candidates_created += 1
+
+                    except IntegrityError:
+                        # Duplicate fingerprint - another concurrent task created it
+                        # Savepoint rolled back automatically when exception left context
+                        logger.debug(f"Duplicate candidate fingerprint {fingerprint[:8]}, skipping")
+                        continue
 
                 except CanonicalizationError as e:
                     logger.warning(f"Canonicalization failed: {e}")
@@ -590,12 +598,22 @@ async def _finalize_discovery(run_id: UUID) -> dict[str, Any]:
 
         if candidates:
             # Parse config_snapshot to get dedup configuration
+            # NO FALLBACK - persisted configuration must govern execution
             try:
                 exec_config = parse_execution_config(run.config_snapshot)
                 dedup_iou_threshold = exec_config.dedup.iou_threshold
-            except Exception as e:
-                logger.warning(f"Failed to parse config_snapshot for dedup config, using default: {e}")
-                dedup_iou_threshold = 0.5
+            except ExecutionConfigError as e:
+                # Configuration error - cannot run dedup deterministically
+                logger.error(f"Failed to parse config_snapshot for finalizer: {e}")
+                run.status = "failed"
+                run.error_message = f"Invalid execution config in finalizer: {e}"
+                run.completed_at = datetime.now(UTC)
+                run.updated_at = datetime.now(UTC)
+                # Create workflow service for transition
+                wf_service = ClipWorkflowService(session)
+                await wf_service.transition_status(workflow.id, "failed")
+                await session.commit()
+                return {"status": "failed", "run_id": str(run_id), "error": str(e)}
 
             deduplicator = CandidateDeduplicator(iou_threshold=dedup_iou_threshold)
             dedup_candidates = [
@@ -634,22 +652,19 @@ async def _finalize_discovery(run_id: UUID) -> dict[str, Any]:
         actual_processed = actual_completed + actual_failed
         total_windows = len(window_statuses)
 
-        # Verify all windows are processed - refuse early finalization
+        # Early finalization - run is NOT ready yet
+        # Do NOT mutate run into failed state - just return not_ready
         if actual_processed != total_windows:
-            logger.error(
+            logger.warning(
                 f"Finalizer called early for run {run_id}: "
                 f"{actual_processed}/{total_windows} processed "
                 f"(pending={actual_pending}, processing={actual_processing})"
             )
-            run.status = "failed"
-            run.error_message = f"Early finalization attempted: {actual_processed}/{total_windows} windows processed"
-            run.completed_at = datetime.now(UTC)
-            run.updated_at = datetime.now(UTC)
-            await session.commit()
+            # Run remains "running", workflow remains "discovering"
+            # Return not_ready without mutating state
             return {
-                "status": "failed",
+                "status": "not_ready",
                 "run_id": str(run_id),
-                "error": "early_finalization",
                 "pending": actual_pending,
                 "processing": actual_processing,
                 "completed": actual_completed,
@@ -762,8 +777,20 @@ async def _recover_stale_runs() -> dict[str, Any]:
                         # Window is actively processing and healthy
                         healthy_processing += 1
                 else:
-                    # No timestamp but processing - definitely stale
-                    stale_windows.append(window)
+                    # No timestamp but processing - data corruption
+                    # Apply MAX_WINDOW_ATTEMPTS bound to this path too
+                    if window.attempt_count >= MAX_WINDOW_ATTEMPTS:
+                        logger.error(
+                            f"Window {window.id} exceeded max attempts "
+                            f"({MAX_WINDOW_ATTEMPTS}) during recovery (no timestamp), marking failed"
+                        )
+                        window.status = "failed"
+                        window.error_message = f"Exceeded max recovery attempts ({MAX_WINDOW_ATTEMPTS})"
+                        window.processing_started_at = None
+                        window.updated_at = datetime.now(UTC)
+                        await _increment_failed_windows(session, run.id)
+                    else:
+                        stale_windows.append(window)
 
             for window in stale_windows:
                 window.status = "pending"

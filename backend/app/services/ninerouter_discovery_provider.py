@@ -95,6 +95,7 @@ class NineRouterDiscoveryProvider(ClipDiscoveryProviderProtocol):
         max_candidates_per_window: int = 10,
         temperature: float = 0.3,
         timeout_seconds: int | None = None,
+        system_prompt: str | None = None,
     ) -> None:
         self.combo = combo or settings.nine_router_discovery_combo
         self.base_url = (base_url or settings.nine_router_base_url).rstrip("/")
@@ -102,13 +103,19 @@ class NineRouterDiscoveryProvider(ClipDiscoveryProviderProtocol):
         self.max_candidates_per_window = max_candidates_per_window
         self.temperature = temperature
         self.timeout_seconds = timeout_seconds or settings.nine_router_timeout_seconds
+        self.system_prompt = system_prompt
 
     def _build_system_prompt(self) -> str:
         """Build the system prompt for clip discovery.
 
-        Uses canonical prompt from app.prompts to ensure consistency
-        with prompt_hash computation in DiscoveryBootstrapService.
+        Uses runtime-provided prompt from execution config (verified against
+        persisted prompt_hash) or falls back to canonical prompt from registry.
         """
+        if self.system_prompt:
+            # Runtime prompt from config_snapshot (verified by parse_execution_config)
+            return self.system_prompt
+
+        # Fallback to canonical prompt (for backward compatibility)
         from app.prompts.clip_discovery_prompts import CLIP_DISCOVERY_V1_PROMPT
 
         return CLIP_DISCOVERY_V1_PROMPT

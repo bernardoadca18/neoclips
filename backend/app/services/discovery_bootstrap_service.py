@@ -217,7 +217,6 @@ class DiscoveryBootstrapService:
         strategy_version: str = "1.0.0",
         prompt_id: str = "clip_discovery_v1",
         prompt_version: str = "1.0.0",
-        prompt_text: str | None = None,
         llm_model: str | None = None,
         llm_provider: str | None = None,
         temperature: float = 0.3,
@@ -235,9 +234,8 @@ class DiscoveryBootstrapService:
             idempotency_key: Optional idempotency key for deduplication
             strategy_id: Discovery strategy identifier
             strategy_version: Strategy version
-            prompt_id: Prompt identifier
-            prompt_version: Prompt version
-            prompt_text: Full prompt text (for hash computation)
+            prompt_id: Prompt identifier (resolved from registry)
+            prompt_version: Prompt version (resolved from registry)
             llm_model: LLM model name (default from settings)
             llm_provider: LLM provider name (extracted from model if not provided)
             temperature: LLM temperature
@@ -300,10 +298,16 @@ class DiscoveryBootstrapService:
         nine_router_combo = llm_model or settings.nine_router_discovery_combo
         resolved_provider = "9router"
 
-        # Compute prompt hash
-        prompt_hash = self._compute_prompt_hash(
-            prompt_text or self._get_default_prompt()
-        )
+        # Compute prompt hash from registry
+        from app.prompts.clip_discovery_prompts import get_clip_discovery_prompt
+
+        prompt_text = get_clip_discovery_prompt(prompt_id, prompt_version)
+        if prompt_text is None:
+            raise DiscoveryBootstrapError(
+                f"Cannot resolve prompt {prompt_id}@{prompt_version} from registry"
+            )
+
+        prompt_hash = self._compute_prompt_hash(prompt_text)
 
         # Compute request fingerprint
         request_fingerprint = self._compute_request_fingerprint(
@@ -491,16 +495,6 @@ class DiscoveryBootstrapService:
             windows=db_windows,
             created=True,
         )
-
-    def _get_default_prompt(self) -> str:
-        """Get the default clip discovery prompt text.
-
-        Uses canonical prompt from app.prompts module to ensure
-        prompt_hash consistency between bootstrap and execution.
-        """
-        from app.prompts.clip_discovery_prompts import CLIP_DISCOVERY_V1_PROMPT
-
-        return CLIP_DISCOVERY_V1_PROMPT
 
 
 __all__ = [
