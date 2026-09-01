@@ -15,6 +15,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from app.clients.media_indexer_client import TranscriptSegmentOut
 from app.services.ninerouter_discovery_provider import (
     DiscoveryProviderResult,
     LLMResponseValidationError,
@@ -23,49 +24,63 @@ from app.services.ninerouter_discovery_provider import (
     NineRouterResponseError,
     NineRouterUnavailableError,
 )
-from app.services.transcript_window_builder import TranscriptWindow, WindowSegment
+from app.services.transcript_window_builder import TranscriptWindow
 
 
 @pytest.fixture
 def mock_window():
     """Create a mock transcript window with segments."""
+    transcription_id = uuid4()
     return TranscriptWindow(
+        window_index=0,
+        start_seconds=0.0,
+        end_seconds=30.0,
         segments=[
-            WindowSegment(
-                id=1,
+            TranscriptSegmentOut(
+                id=uuid4(),
+                transcription_id=transcription_id,
+                sequence=0,
                 start_seconds=0.0,
                 end_seconds=10.0,
                 text="First segment",
             ),
-            WindowSegment(
-                id=2,
+            TranscriptSegmentOut(
+                id=uuid4(),
+                transcription_id=transcription_id,
+                sequence=1,
                 start_seconds=10.0,
                 end_seconds=20.0,
                 text="Second segment",
             ),
-            WindowSegment(
-                id=3,
+            TranscriptSegmentOut(
+                id=uuid4(),
+                transcription_id=transcription_id,
+                sequence=2,
                 start_seconds=20.0,
                 end_seconds=30.0,
                 text="Third segment",
             ),
         ],
-        start_seconds=0.0,
-        end_seconds=30.0,
     )
 
 
 @pytest.fixture
-def valid_llm_response():
-    """Valid LLM discovery response JSON."""
+def valid_llm_response(mock_window):
+    """Valid LLM discovery response JSON using actual segment IDs from mock_window."""
+    # Use actual segment UUIDs from the mock window
+    segment_ids = [str(seg.id) for seg in mock_window.segments]
     return json.dumps({
         "clips": [
             {
-                "start_segment_id": 1,
-                "end_segment_id": 2,
+                "start_segment_id": segment_ids[0],
+                "end_segment_id": segment_ids[1],
                 "title": "Test Clip",
-                "hook": "Great opening",
                 "summary": "A compelling clip",
+                "hook_type": "question",
+                "hook_description": "Great opening",
+                "hook_strength": 0.8,
+                "standalone_clarity": 0.7,
+                "narrative_completeness": 0.9,
             }
         ]
     })
@@ -128,7 +143,8 @@ class TestNineRouterDiscoveryProviderSuccess:
             assert result.requested_combo == "neoclips-discovery"
             assert result.resolved_model == "gpt-4o-2024-08-06"
             assert len(result.response.clips) == 1
-            assert result.response.clips[0].start_segment_id == 1
+            # Verify the clip uses the first segment's ID from the mock window
+            assert result.response.clips[0].start_segment_id == mock_window.segments[0].id
 
     @pytest.mark.asyncio
     async def test_discover_clips_backward_compat(self, mock_window, valid_llm_response):
@@ -264,21 +280,27 @@ class TestNineRouterDiscoveryProviderValidation:
     def test_validate_invalid_segment_id_raises_error(self, mock_window):
         """Invalid segment ID raises LLMResponseValidationError."""
         provider = NineRouterDiscoveryProvider()
+        # Use a UUID that doesn't exist in the window
+        fake_uuid = str(uuid4())
         invalid_response = json.dumps({
             "clips": [
                 {
-                    "start_segment_id": 999,  # Not in window
-                    "end_segment_id": 2,
+                    "start_segment_id": fake_uuid,  # Not in window
+                    "end_segment_id": str(mock_window.segments[0].id),
                     "title": "Test",
-                    "hook": "Hook",
                     "summary": "Summary",
+                    "hook_type": "statement",
+                    "hook_description": "Hook",
+                    "hook_strength": 0.5,
+                    "standalone_clarity": 0.5,
+                    "narrative_completeness": 0.5,
                 }
             ]
         })
         with pytest.raises(LLMResponseValidationError) as exc_info:
             provider._validate_response(invalid_response, mock_window)
         assert "start_segment_id" in str(exc_info.value)
-        assert "999" in str(exc_info.value)
+        assert fake_uuid in str(exc_info.value)
 
     def test_validate_strips_markdown_code_blocks(self, mock_window, valid_llm_response):
         """Markdown code blocks are stripped before parsing."""
@@ -293,11 +315,15 @@ class TestNineRouterDiscoveryProviderValidation:
         response_with_invalid_segment = json.dumps({
             "clips": [
                 {
-                    "start_segment_id": 999,
-                    "end_segment_id": 1000,
+                    "start_segment_id": str(uuid4()),
+                    "end_segment_id": str(uuid4()),
                     "title": "Test",
-                    "hook": "Hook",
                     "summary": "Summary",
+                    "hook_type": "statement",
+                    "hook_description": "Hook",
+                    "hook_strength": 0.5,
+                    "standalone_clarity": 0.5,
+                    "narrative_completeness": 0.5,
                 }
             ]
         })
@@ -371,8 +397,9 @@ class TestPromptBuilding:
         provider = NineRouterDiscoveryProvider()
         prompt = provider._build_user_prompt(mock_window)
 
-        assert "[1]" in prompt
-        assert "[2]" in prompt
+        # Prompt uses segment UUIDs for identification
+        assert str(mock_window.segments[0].id) in prompt
+        assert str(mock_window.segments[1].id) in prompt
         assert "First segment" in prompt
         assert "Second segment" in prompt
         assert "0.0s" in prompt

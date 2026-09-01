@@ -33,11 +33,19 @@ from app.models.entities import (
     DiscoveryRun,
     DiscoveryWindow,
 )
-from app.services.candidate_canonicalizer import CanonicalizationError
+from app.services.candidate_canonicalizer import CandidateCanonicalizer, CanonicalizationError
+from app.services.clip_scoring import calculate_clip_score_v1
 from app.services.clip_workflow_service import ClipWorkflowService
+from app.services.discovery_execution_config import (
+    MAX_WINDOW_ATTEMPTS,
+    ExecutionConfigError,
+    parse_execution_config,
+)
+from app.services.ninerouter_discovery_provider import (
+    NineRouterDiscoveryProvider,
+)
 from app.services.ninerouter_discovery_provider import (
     NineRouterError as ClipDiscoveryProviderError,
-    NineRouterDiscoveryProvider,
 )
 from app.services.transcript_window_builder import TranscriptWindow
 
@@ -165,8 +173,18 @@ async def _process_window(window_id: UUID, run_id: UUID) -> dict[str, Any]:
                 if elapsed < STALE_WINDOW_TIMEOUT_SECONDS:
                     logger.info(f"Window {window_id} already processing for {elapsed}s, skipping")
                     return {"status": "already_processing", "window_id": str(window_id)}
+                # Window is stale, check attempt limit
+                if window.attempt_count >= MAX_WINDOW_ATTEMPTS:
+                    logger.error(f"Window {window_id} exceeded max attempts ({MAX_WINDOW_ATTEMPTS}), marking failed")
+                    window.status = "failed"
+                    window.error_message = f"Exceeded max recovery attempts ({MAX_WINDOW_ATTEMPTS})"
+                    window.updated_at = datetime.now(UTC)
+                    await _increment_failed_windows(session, run_id)
+                    await session.commit()
+                    await _schedule_next_or_finalizer(session, run_id)
+                    return {"status": "failed", "window_id": str(window_id), "error": "max_attempts_exceeded"}
                 # Window is stale, recover it
-                logger.warning(f"Recovering stale window {window_id} (processing for {elapsed}s)")
+                logger.warning(f"Recovering stale window {window_id} (processing for {elapsed}s, attempt {window.attempt_count + 1}/{MAX_WINDOW_ATTEMPTS})")
                 window.attempt_count += 1
             else:
                 # No processing_started_at but status is processing - data corruption
@@ -278,29 +296,51 @@ async def _process_window(window_id: UUID, run_id: UUID) -> dict[str, Any]:
         )
 
         # Process with LLM using persisted execution identity
-        # Reconstruct provider from DiscoveryRun config (not global defaults)
-        # The combo alias is stored in llm_model field
+        # Parse config_snapshot to get runtime configuration
+        try:
+            exec_config = parse_execution_config(run.config_snapshot)
+        except ExecutionConfigError as e:
+            logger.error(f"Failed to parse config_snapshot for run {run_id}: {e}")
+            window.status = "failed"
+            window.error_message = f"Invalid config_snapshot: {e}"
+            window.updated_at = datetime.now(UTC)
+            await _increment_failed_windows(session, run_id)
+            await session.commit()
+            await _schedule_next_or_finalizer(session, run_id)
+            return {"status": "failed", "window_id": str(window_id), "error": str(e)}
+
         discovery_provider = NineRouterDiscoveryProvider(
-            combo=run.llm_model or settings.nine_router_discovery_combo,
-            temperature=0.3,  # TODO: Persist in DiscoveryRun.config_snapshot
-            max_candidates_per_window=10,  # TODO: Persist in DiscoveryRun.config_snapshot
+            combo=exec_config.llm.combo,
+            temperature=exec_config.llm.temperature,
+            max_candidates_per_window=exec_config.llm.max_candidates_per_window,
         )
         source_duration = transcription.duration_seconds or window_segments[-1].end_seconds
         total_transcript_length = sum(len(seg.text) for seg in window_segments)
 
+        # Initialize canonicalizer for segment ID to timestamp resolution
+        canonicalizer = CandidateCanonicalizer(window_segments)
+        candidates_created = 0
+
         try:
-            # Get LLM suggestions
-            response, raw_response = await discovery_provider.discover_clips(transcript_window)
+            # Get LLM suggestions using 9Router with execution metadata capture
+            provider_result = await discovery_provider.discover_clips_with_model(transcript_window)
+            response = provider_result.response
+            raw_response = provider_result.raw_content
 
             # Store raw response
             window.llm_response_raw = raw_response
 
-            # Canonicalize and create candidates
-            from app.services.candidate_canonicalizer import CandidateCanonicalizer
-            from app.services.clip_scoring import calculate_clip_score_v1
-
-            canonicalizer = CandidateCanonicalizer(window_segments)
-            candidates_created = 0
+            # Log 9Router execution metadata (requested_combo vs resolved_model)
+            logger.info(
+                "9Router discovery completed",
+                extra={
+                    "run_id": str(run_id),
+                    "window_id": str(window_id),
+                    "requested_combo": provider_result.requested_combo,
+                    "resolved_model": provider_result.resolved_model,
+                    "clips_count": len(response.clips),
+                },
+            )
 
             for suggestion in response.clips:
                 try:
@@ -360,12 +400,12 @@ async def _process_window(window_id: UUID, run_id: UUID) -> dict[str, Any]:
                         created_at=datetime.now(UTC),
                         updated_at=datetime.now(UTC),
                     )
-                    session.add(candidate)
 
                     # Use nested transaction (savepoint) to isolate candidate insert
-                    # This prevents rollback from erasing prior candidates on duplicate
+                    # Add candidate INSIDE savepoint, not before, for proper rollback semantics
                     async with session.begin_nested():
                         try:
+                            session.add(candidate)
                             await session.flush()
                             candidates_created += 1
                         except IntegrityError:
@@ -549,7 +589,15 @@ async def _finalize_discovery(run_id: UUID) -> dict[str, Any]:
         candidates = list(result.scalars().all())
 
         if candidates:
-            deduplicator = CandidateDeduplicator(iou_threshold=0.5)
+            # Parse config_snapshot to get dedup configuration
+            try:
+                exec_config = parse_execution_config(run.config_snapshot)
+                dedup_iou_threshold = exec_config.dedup.iou_threshold
+            except Exception as e:
+                logger.warning(f"Failed to parse config_snapshot for dedup config, using default: {e}")
+                dedup_iou_threshold = 0.5
+
+            deduplicator = CandidateDeduplicator(iou_threshold=dedup_iou_threshold)
             dedup_candidates = [
                 CandidateForDedup(
                     id=c.id,
@@ -581,7 +629,32 @@ async def _finalize_discovery(run_id: UUID) -> dict[str, Any]:
 
         actual_completed = sum(1 for s in window_statuses if s == "completed")
         actual_failed = sum(1 for s in window_statuses if s == "failed")
+        actual_processing = sum(1 for s in window_statuses if s == "processing")
+        actual_pending = sum(1 for s in window_statuses if s == "pending")
         actual_processed = actual_completed + actual_failed
+        total_windows = len(window_statuses)
+
+        # Verify all windows are processed - refuse early finalization
+        if actual_processed != total_windows:
+            logger.error(
+                f"Finalizer called early for run {run_id}: "
+                f"{actual_processed}/{total_windows} processed "
+                f"(pending={actual_pending}, processing={actual_processing})"
+            )
+            run.status = "failed"
+            run.error_message = f"Early finalization attempted: {actual_processed}/{total_windows} windows processed"
+            run.completed_at = datetime.now(UTC)
+            run.updated_at = datetime.now(UTC)
+            await session.commit()
+            return {
+                "status": "failed",
+                "run_id": str(run_id),
+                "error": "early_finalization",
+                "pending": actual_pending,
+                "processing": actual_processing,
+                "completed": actual_completed,
+                "failed": actual_failed,
+            }
 
         # Update counters with reconciled values
         run.completed_windows = actual_completed
@@ -667,11 +740,27 @@ async def _recover_stale_runs() -> dict[str, Any]:
                 .where(DiscoveryWindow.status == "processing")
             )
             stale_windows = []
+            healthy_processing = 0
             for window in result.scalars().all():
                 if window.processing_started_at:
                     elapsed = (datetime.now(UTC) - window.processing_started_at.replace(tzinfo=UTC)).total_seconds()
                     if elapsed >= STALE_WINDOW_TIMEOUT_SECONDS:
-                        stale_windows.append(window)
+                        # Check attempt limit before recovering
+                        if window.attempt_count >= MAX_WINDOW_ATTEMPTS:
+                            logger.error(
+                                f"Window {window.id} exceeded max attempts "
+                                f"({MAX_WINDOW_ATTEMPTS}) during recovery, marking failed"
+                            )
+                            window.status = "failed"
+                            window.error_message = f"Exceeded max recovery attempts ({MAX_WINDOW_ATTEMPTS})"
+                            window.processing_started_at = None
+                            window.updated_at = datetime.now(UTC)
+                            await _increment_failed_windows(session, run.id)
+                        else:
+                            stale_windows.append(window)
+                    else:
+                        # Window is actively processing and healthy
+                        healthy_processing += 1
                 else:
                     # No timestamp but processing - definitely stale
                     stale_windows.append(window)
@@ -682,6 +771,15 @@ async def _recover_stale_runs() -> dict[str, Any]:
                 window.attempt_count += 1
                 window.updated_at = datetime.now(UTC)
                 stats["windows_recovered"] += 1
+
+            # Only dispatch a pending window if no healthy processing windows exist
+            # This preserves the one-window-at-a-time invariant
+            if healthy_processing > 0:
+                logger.info(
+                    f"Run {run.id} has {healthy_processing} healthy processing window(s), "
+                    f"skipping dispatch to preserve one-window-at-a-time invariant"
+                )
+                continue
 
             # Find pending windows
             result = await session.execute(

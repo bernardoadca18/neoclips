@@ -286,12 +286,6 @@ Return JSON with clips array (max {self.max_candidates_per_window} clips)."""
 # Legacy alias for backward compatibility during migration
 ClipDiscoveryProviderError = NineRouterError
 
-# Provider property for accessing the combo (model alias)
-@property
-def model(self) -> str:
-    """Return the combo alias for backward compatibility."""
-    return self.combo
-
 
 __all__ = [
     "NineRouterDiscoveryProvider",

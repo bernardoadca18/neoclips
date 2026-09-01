@@ -26,8 +26,10 @@ from app.services.candidate_canonicalizer import CandidateCanonicalizer, Canonic
 from app.services.candidate_deduplicator import CandidateDeduplicator, CandidateForDedup
 from app.services.clip_scoring import calculate_clip_score_v1
 from app.services.ninerouter_discovery_provider import (
-    NineRouterError as ClipDiscoveryProviderError,
     NineRouterDiscoveryProvider,
+)
+from app.services.ninerouter_discovery_provider import (
+    NineRouterError as ClipDiscoveryProviderError,
 )
 from app.services.transcript_window_builder import TranscriptWindowBuilder, WindowConfig
 
