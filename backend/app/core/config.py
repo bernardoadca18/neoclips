@@ -58,11 +58,14 @@ class Settings(BaseSettings):
     # Video Composer (future stage)
     video_composer_url: str | None = None
 
-    # LiteLLM HTTP proxy
-    litellm_base_url: str = Field(default="http://localhost:4000")
-    litellm_api_key: str | None = None
-    litellm_timeout_seconds: int = 60
-    litellm_model: str = Field(default="openai/gpt-4o-mini", description="LLM model for clip discovery (format: provider/model)")
+    # 9Router LLM Gateway
+    nine_router_base_url: str = Field(default="http://localhost:20128")
+    nine_router_api_key: str | None = None
+    nine_router_timeout_seconds: int = 120
+    nine_router_discovery_combo: str = Field(
+        default="neoclips-discovery",
+        description="9Router Combo alias for clip discovery"
+    )
 
     @field_validator("log_level")
     @classmethod

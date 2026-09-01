@@ -1,7 +1,7 @@
 """ClipDiscoveryProvider protocol for dependency inversion.
 
 Defines the interface for LLM-based clip discovery, allowing different
-implementations (LiteLLM HTTP, mock, file-based) without tight coupling.
+implementations (9Router, mock, file-based) without tight coupling.
 """
 
 from typing import Protocol
@@ -19,7 +19,7 @@ class ClipDiscoveryProvider(Protocol):
     clip candidates with semantic features.
 
     This abstraction allows:
-    - LiteLLM HTTP proxy (production)
+    - 9Router gateway (production)
     - Mock providers (testing)
     - File-based providers (evaluation)
     """

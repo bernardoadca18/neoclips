@@ -296,14 +296,9 @@ class DiscoveryBootstrapService:
         if not transcription.duration_seconds or transcription.duration_seconds <= 0:
             raise SourceNotReadyError("Transcription has no valid duration")
 
-        # Resolve LLM model and provider
-        litellm_model = llm_model or settings.litellm_model
-        if llm_provider:
-            resolved_provider = llm_provider
-        elif "/" in litellm_model:
-            resolved_provider, _ = litellm_model.split("/", 1)
-        else:
-            resolved_provider = "openai"
+        # Resolve LLM combo and provider
+        nine_router_combo = llm_model or settings.nine_router_discovery_combo
+        resolved_provider = "9router"
 
         # Compute prompt hash
         prompt_hash = self._compute_prompt_hash(
@@ -319,7 +314,7 @@ class DiscoveryBootstrapService:
             prompt_version=prompt_version,
             prompt_hash=prompt_hash,
             llm_provider=resolved_provider,
-            llm_model=litellm_model,
+            llm_model=nine_router_combo,
             window_duration=self.window_duration_seconds,
             window_overlap=self.window_overlap_seconds,
             temperature=temperature,
@@ -334,7 +329,7 @@ class DiscoveryBootstrapService:
             prompt_version=prompt_version,
             prompt_hash=prompt_hash,
             llm_provider=resolved_provider,
-            llm_model=litellm_model,
+            llm_model=nine_router_combo,
             window_duration=self.window_duration_seconds,
             window_overlap=self.window_overlap_seconds,
             temperature=temperature,
@@ -416,7 +411,7 @@ class DiscoveryBootstrapService:
             prompt_version=prompt_version,
             prompt_hash=prompt_hash,
             config_snapshot=config_snapshot,
-            llm_model=litellm_model,
+            llm_model=nine_router_combo,
             llm_provider=resolved_provider,
             total_windows=len(windows_to_create),
             processed_windows=0,

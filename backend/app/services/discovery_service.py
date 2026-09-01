@@ -25,9 +25,9 @@ from app.repositories.discovery_repository import (
 from app.services.candidate_canonicalizer import CandidateCanonicalizer, CanonicalizationError
 from app.services.candidate_deduplicator import CandidateDeduplicator, CandidateForDedup
 from app.services.clip_scoring import calculate_clip_score_v1
-from app.services.litellm_http_discovery_provider import (
-    ClipDiscoveryProviderError,
-    LiteLLMHTTPDiscoveryProvider,
+from app.services.ninerouter_discovery_provider import (
+    NineRouterError as ClipDiscoveryProviderError,
+    NineRouterDiscoveryProvider,
 )
 from app.services.transcript_window_builder import TranscriptWindowBuilder, WindowConfig
 
@@ -61,7 +61,7 @@ class DiscoveryService:
     def __init__(
         self,
         session: AsyncSession,
-        discovery_provider: LiteLLMHTTPDiscoveryProvider | None = None,
+        discovery_provider: NineRouterDiscoveryProvider | None = None,
         window_config: WindowConfig | None = None,
         iou_threshold: float = 0.5,
     ) -> None:
@@ -69,7 +69,7 @@ class DiscoveryService:
         self.run_repository = DiscoveryRunRepository(session)
         self.window_repository = DiscoveryWindowRepository(session)
         self.candidate_repository = ClipCandidateRepository(session)
-        self.discovery_provider = discovery_provider or LiteLLMHTTPDiscoveryProvider()
+        self.discovery_provider = discovery_provider or NineRouterDiscoveryProvider()
         self.window_builder = TranscriptWindowBuilder(window_config)
         self.deduplicator = CandidateDeduplicator(iou_threshold)
 
@@ -93,8 +93,8 @@ class DiscoveryService:
             workflow_id=workflow.id,
             status="pending",
             profile=profile,
-            llm_model=self.discovery_provider.model,
-            llm_provider=self.discovery_provider.model.split("/")[0] if "/" in self.discovery_provider.model else "unknown",
+            llm_model=self.discovery_provider.combo,
+            llm_provider="9router",
             total_windows=0,
             processed_windows=0,
             total_candidates=0,

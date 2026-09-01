@@ -50,7 +50,7 @@ def mock_settings():
     with patch("app.tasks.discovery_tasks.settings") as mock:
         mock.media_indexer_base_url = "http://test"
         mock.media_indexer_timeout_seconds = 30
-        mock.litellm_model = "test-model"
+        mock.nine_router_discovery_combo = "neoclips-discovery"
         yield mock
 
 
@@ -197,8 +197,8 @@ class TestProcessWindowStaleRecovery:
             mock_page.items = []
             mock_client.get_transcript_segments = AsyncMock(return_value=mock_page)
 
-            # Mock LiteLLMHTTPDiscoveryProvider
-            with patch("app.tasks.discovery_tasks.LiteLLMHTTPDiscoveryProvider"):
+            # Mock NineRouterDiscoveryProvider
+            with patch("app.tasks.discovery_tasks.NineRouterDiscoveryProvider"):
                 from app.tasks.discovery_tasks import _process_window
 
                 result = await _process_window(window_id, run_id)

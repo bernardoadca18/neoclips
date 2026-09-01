@@ -45,9 +45,9 @@ from app.repositories.discovery_repository import (
 from app.services.candidate_canonicalizer import CandidateCanonicalizer, CanonicalizationError
 from app.services.candidate_deduplicator import CandidateDeduplicator, CandidateForDedup
 from app.services.clip_scoring import calculate_clip_score_v1
-from app.services.litellm_http_discovery_provider import (
-    ClipDiscoveryProviderError,
-    LiteLLMHTTPDiscoveryProvider,
+from app.services.ninerouter_discovery_provider import (
+    NineRouterError as ClipDiscoveryProviderError,
+    NineRouterDiscoveryProvider,
 )
 from app.services.transcript_window_builder import TranscriptWindow, WindowConfig
 
@@ -139,7 +139,7 @@ class StreamingDiscoveryService:
     def __init__(
         self,
         session: AsyncSession,
-        discovery_provider: LiteLLMHTTPDiscoveryProvider | None = None,
+        discovery_provider: NineRouterDiscoveryProvider | None = None,
         window_config: WindowConfig | None = None,
         iou_threshold: float = 0.5,
         page_size: int = 500,
@@ -157,7 +157,7 @@ class StreamingDiscoveryService:
         self.run_repository = DiscoveryRunRepository(session)
         self.window_repository = DiscoveryWindowRepository(session)
         self.candidate_repository = ClipCandidateRepository(session)
-        self.discovery_provider = discovery_provider or LiteLLMHTTPDiscoveryProvider()
+        self.discovery_provider = discovery_provider or NineRouterDiscoveryProvider()
         self.window_config = window_config or WindowConfig()
         self.deduplicator = CandidateDeduplicator(iou_threshold)
         self.page_size = page_size
@@ -323,8 +323,8 @@ class StreamingDiscoveryService:
             config_snapshot=self._serialize_config(),
             status="pending",
             profile="transcript_only",
-            llm_model=self.discovery_provider.model,
-            llm_provider=self.discovery_provider.model.split("/")[0] if "/" in self.discovery_provider.model else "unknown",
+            llm_model=self.discovery_provider.combo,
+            llm_provider="9router",
             total_windows=0,
             processed_windows=0,
             total_candidates=0,
@@ -365,7 +365,7 @@ class StreamingDiscoveryService:
                 "overlap_seconds": self.window_config.overlap_seconds,
                 "min_segment_count": self.window_config.min_segment_count,
             },
-            "llm_model": self.discovery_provider.model,
+            "llm_combo": self.discovery_provider.combo,
             "iou_threshold": self.deduplicator.iou_threshold,
         })
 

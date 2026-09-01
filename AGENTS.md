@@ -21,7 +21,7 @@ The following are implemented:
 - Alembic migrations
 - Media Indexer HTTP client with polling
 - TranscriptWindowBuilder for bounded processing
-- ClipDiscoveryProvider (LiteLLM) with strict JSON validation
+- ClipDiscoveryProvider (9Router) with strict JSON validation
 - CandidateCanonicalizer for segment ID to timestamp resolution
 - Deterministic scoring (clip_score_v1) with documented weights
 - CandidateDeduplicator with temporal IoU
@@ -74,7 +74,7 @@ DO NOT implement these without explicit instruction:
 
 ## Integration Boundaries
 
-NeoClips never accesses databases of other services directly. Future integration points:
+NeoClips never accesses databases of other services directly. Integration points:
 - `MediaIndexerClient` - HTTP client for Media Indexer API
 - `VideoComposerClient` - HTTP client for Video Composer API
-- `AIProvider` - Abstraction for LLM providers
+- `NineRouterDiscoveryProvider` - LLM gateway via 9Router

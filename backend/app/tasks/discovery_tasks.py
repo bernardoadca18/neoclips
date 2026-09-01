@@ -35,9 +35,9 @@ from app.models.entities import (
 )
 from app.services.candidate_canonicalizer import CanonicalizationError
 from app.services.clip_workflow_service import ClipWorkflowService
-from app.services.litellm_http_discovery_provider import (
-    ClipDiscoveryProviderError,
-    LiteLLMHTTPDiscoveryProvider,
+from app.services.ninerouter_discovery_provider import (
+    NineRouterError as ClipDiscoveryProviderError,
+    NineRouterDiscoveryProvider,
 )
 from app.services.transcript_window_builder import TranscriptWindow
 
@@ -278,11 +278,12 @@ async def _process_window(window_id: UUID, run_id: UUID) -> dict[str, Any]:
         )
 
         # Process with LLM using persisted execution identity
-        # Reconstruct provider with model from DiscoveryRun (not defaults)
-        discovery_provider = LiteLLMHTTPDiscoveryProvider(
-            model=run.llm_model or settings.litellm_model,
-            temperature=0.3,  # Default temperature - should be persisted in run
-            max_candidates_per_window=10,  # Default max candidates - should be persisted in run
+        # Reconstruct provider from DiscoveryRun config (not global defaults)
+        # The combo alias is stored in llm_model field
+        discovery_provider = NineRouterDiscoveryProvider(
+            combo=run.llm_model or settings.nine_router_discovery_combo,
+            temperature=0.3,  # TODO: Persist in DiscoveryRun.config_snapshot
+            max_candidates_per_window=10,  # TODO: Persist in DiscoveryRun.config_snapshot
         )
         source_duration = transcription.duration_seconds or window_segments[-1].end_seconds
         total_transcript_length = sum(len(seg.text) for seg in window_segments)

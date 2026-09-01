@@ -1,12 +1,21 @@
-"""ClipDiscoveryProvider using LiteLLM HTTP proxy for clip discovery.
+"""ClipDiscoveryProvider using 9Router gateway for clip discovery.
 
 Provides LLM-based clip discovery with strict JSON validation via HTTP.
 The LLM acts as a semantic judge, returning segment IDs that are
 later canonicalized to trusted timestamps.
+
+9Router is the sole LLM gateway for NeoClips. It handles:
+- Combo-based model routing
+- Fallback chains across providers
+- Rate limiting and quota management
+
+NeoClips only needs to specify the logical role (discovery) and
+the 9Router Combo alias handles physical model selection.
 """
 
 import json
 import logging
+from dataclasses import dataclass
 
 import httpx
 from pydantic import ValidationError
@@ -21,13 +30,25 @@ from app.services.transcript_window_builder import TranscriptWindow
 logger = logging.getLogger(__name__)
 
 
-class ClipDiscoveryProviderError(Exception):
-    """Base error for clip discovery provider."""
+class NineRouterError(Exception):
+    """Base error for 9Router provider."""
 
     pass
 
 
-class LLMResponseValidationError(ClipDiscoveryProviderError):
+class NineRouterUnavailableError(NineRouterError):
+    """Raised when 9Router is unreachable."""
+
+    pass
+
+
+class NineRouterResponseError(NineRouterError):
+    """Raised when 9Router returns an error response."""
+
+    pass
+
+
+class LLMResponseValidationError(NineRouterError):
     """Raised when LLM response fails validation."""
 
     def __init__(self, message: str, raw_response: str | None = None) -> None:
@@ -35,37 +56,52 @@ class LLMResponseValidationError(ClipDiscoveryProviderError):
         self.raw_response = raw_response
 
 
-class LiteLLMHTTPDiscoveryProvider(ClipDiscoveryProviderProtocol):
-    """
-    LLM-based clip discovery provider using LiteLLM HTTP proxy.
+@dataclass
+class DiscoveryProviderResult:
+    """Result from discovery provider including resolved model info."""
 
-    Sends transcript windows to LLM for clip candidate discovery via HTTP.
+    response: LLMDiscoveryResponse
+    raw_content: str
+    requested_combo: str
+    resolved_model: str | None = None
+
+
+class NineRouterDiscoveryProvider(ClipDiscoveryProviderProtocol):
+    """
+    LLM-based clip discovery provider using 9Router gateway.
+
+    Sends transcript windows to LLM for clip candidate discovery via 9Router.
     The LLM returns segment IDs (not timestamps) for clip boundaries.
     The CandidateCanonicalizer later resolves these to trusted timestamps.
 
+    9Router handles:
+    - Combo-based routing (logical role → physical model)
+    - Fallback chains across multiple providers
+    - Rate limiting and quota management
+
     Configuration:
-        - model: LLM model identifier (e.g., "openai/gpt-4o", "anthropic/claude-3-sonnet")
-        - base_url: LiteLLM proxy URL (default: from settings.litellm_base_url)
-        - api_key: API key for LiteLLM proxy (default: from settings.litellm_api_key)
+        - combo: 9Router Combo alias (e.g., "neoclips-discovery")
+        - base_url: 9Router gateway URL (default: from settings.nine_router_base_url)
+        - api_key: API key for 9Router (default: from settings.nine_router_api_key)
         - max_candidates_per_window: Maximum candidates per window (default: 10)
         - temperature: Sampling temperature (default: 0.3 for consistency)
     """
 
     def __init__(
         self,
-        model: str | None = None,
+        combo: str | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
         max_candidates_per_window: int = 10,
         temperature: float = 0.3,
         timeout_seconds: int | None = None,
     ) -> None:
-        self.model = model or settings.litellm_model
-        self.base_url = (base_url or settings.litellm_base_url).rstrip("/")
-        self.api_key = api_key or settings.litellm_api_key
+        self.combo = combo or settings.nine_router_discovery_combo
+        self.base_url = (base_url or settings.nine_router_base_url).rstrip("/")
+        self.api_key = api_key or settings.nine_router_api_key
         self.max_candidates_per_window = max_candidates_per_window
         self.temperature = temperature
-        self.timeout_seconds = timeout_seconds or settings.litellm_timeout_seconds
+        self.timeout_seconds = timeout_seconds or settings.nine_router_timeout_seconds
 
     def _build_system_prompt(self) -> str:
         """Build the system prompt for clip discovery.
@@ -105,7 +141,28 @@ Return JSON with clips array (max {self.max_candidates_per_window} clips)."""
             Tuple of (validated response, raw LLM response)
 
         Raises:
-            ClipDiscoveryProviderError: If HTTP request fails
+            NineRouterUnavailableError: If 9Router is unreachable
+            NineRouterResponseError: If 9Router returns an error
+            LLMResponseValidationError: If response cannot be parsed or validated
+        """
+        result = await self.discover_clips_with_model(window)
+        return result.response, result.raw_content
+
+    async def discover_clips_with_model(
+        self, window: TranscriptWindow
+    ) -> DiscoveryProviderResult:
+        """
+        Discover clip candidates with resolved model information.
+
+        Args:
+            window: Transcript window to analyze
+
+        Returns:
+            DiscoveryProviderResult with response, raw content, and model info
+
+        Raises:
+            NineRouterUnavailableError: If 9Router is unreachable
+            NineRouterResponseError: If 9Router returns an error
             LLMResponseValidationError: If response cannot be parsed or validated
         """
         messages = [
@@ -113,8 +170,9 @@ Return JSON with clips array (max {self.max_candidates_per_window} clips)."""
             {"role": "user", "content": self._build_user_prompt(window)},
         ]
 
+        # The 'model' field contains the Combo alias
         payload = {
-            "model": self.model,
+            "model": self.combo,
             "messages": messages,
             "temperature": self.temperature,
             "max_tokens": 2000,
@@ -136,20 +194,35 @@ Return JSON with clips array (max {self.max_candidates_per_window} clips)."""
                 data = response.json()
                 raw_content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
+                # Capture the actual resolved model from 9Router response
+                resolved_model = data.get("model")
+
                 if not raw_content:
-                    raise ClipDiscoveryProviderError("Empty response from LLM")
+                    raise NineRouterResponseError("Empty response from 9Router")
 
                 validated = self._validate_response(raw_content, window)
-                return validated, raw_content
+
+                return DiscoveryProviderResult(
+                    response=validated,
+                    raw_content=raw_content,
+                    requested_combo=self.combo,
+                    resolved_model=resolved_model,
+                )
 
             except httpx.HTTPStatusError as e:
-                logger.error(f"LiteLLM HTTP error: {e.response.status_code} - {e.response.text}")
-                raise ClipDiscoveryProviderError(
-                    f"LiteLLM HTTP error: {e.response.status_code}"
+                logger.error(f"9Router HTTP error: {e.response.status_code} - {e.response.text}")
+                raise NineRouterResponseError(
+                    f"9Router HTTP error: {e.response.status_code}"
                 ) from e
+            except httpx.ConnectError as e:
+                logger.error(f"9Router connection error: {e}")
+                raise NineRouterUnavailableError(f"9Router unreachable: {e}") from e
+            except httpx.TimeoutException as e:
+                logger.error(f"9Router timeout: {e}")
+                raise NineRouterUnavailableError(f"9Router timeout: {e}") from e
             except httpx.RequestError as e:
-                logger.error(f"LiteLLM request error: {e}")
-                raise ClipDiscoveryProviderError(f"LiteLLM request error: {e}") from e
+                logger.error(f"9Router request error: {e}")
+                raise NineRouterUnavailableError(f"9Router request error: {e}") from e
 
     def _validate_response(
         self, raw_content: str, window: TranscriptWindow | None = None
@@ -208,3 +281,24 @@ Return JSON with clips array (max {self.max_candidates_per_window} clips)."""
                     )
 
         return response
+
+
+# Legacy alias for backward compatibility during migration
+ClipDiscoveryProviderError = NineRouterError
+
+# Provider property for accessing the combo (model alias)
+@property
+def model(self) -> str:
+    """Return the combo alias for backward compatibility."""
+    return self.combo
+
+
+__all__ = [
+    "NineRouterDiscoveryProvider",
+    "NineRouterError",
+    "NineRouterUnavailableError",
+    "NineRouterResponseError",
+    "LLMResponseValidationError",
+    "DiscoveryProviderResult",
+    "ClipDiscoveryProviderError",  # Legacy alias
+]

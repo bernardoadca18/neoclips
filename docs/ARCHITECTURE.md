@@ -25,7 +25,7 @@ NeoClips is a specialized system for clip discovery and production, integrated w
 
         │
         ▼
-      LiteLLM
+      9Router
 ```
 
 ## Service Ownership
