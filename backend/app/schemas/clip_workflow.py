@@ -36,9 +36,11 @@ class ClipWorkflowUpdate(BaseModel):
     def validate_status(cls, v: str | None) -> str | None:
         if v is None:
             return v
+        # NOTE: "ingesting" and "transcribing" are ClipSource states, not ClipWorkflow states
+        # ClipWorkflow states: created -> discovering -> awaiting_selection -> planning -> rendering -> ...
         valid = {
-            "created", "ingesting", "transcribing", "discovering", "observing",
-            "reranking", "awaiting_selection", "rendering", "packaging", "qa",
+            "created", "discovering", "observing", "reranking",
+            "awaiting_selection", "planning", "rendering", "packaging", "qa",
             "ready_for_review", "blocked", "failed", "cancelled"
         }
         if v not in valid:

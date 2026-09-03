@@ -291,7 +291,12 @@ class EditorialAnalysisService:
             analysis.recommended_end_segment_id = llm_response.recommended_end_segment_id
             analysis.analysis_summary = llm_response.analysis_summary
             analysis.raw_llm_response = raw_content
-            analysis.resolved_model = result.resolved_model or self.editorial_provider.combo
+            # Persist actual physical model from 9Router, never fallback to combo alias
+            if not result.resolved_model:
+                raise EditorialAnalysisError(
+                    f"9Router did not return resolved_model for analysis {analysis_id}"
+                )
+            analysis.resolved_model = result.resolved_model
             analysis.status = "completed"
             analysis.completed_at = datetime.now(UTC)
 

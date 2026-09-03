@@ -496,6 +496,74 @@ class MediaIndexerClient:
 
         return TranscriptSegmentPage(**response.json())
 
+    async def get_transcript_segments_by_time(
+        self,
+        transcription_id: UUID,
+        start_seconds: float,
+        end_seconds: float,
+    ) -> list[TranscriptSegmentOut]:
+        """Get transcript segments within a time range (bounded request).
+
+        This is the preferred method for editorial boundary canonicalization.
+        It fetches only the segments within the specified time window, avoiding
+        the performance cost of loading the entire transcript.
+
+        Args:
+            transcription_id: UUID of the transcription
+            start_seconds: Start of time range in seconds
+            end_seconds: End of time range in seconds
+
+        Returns:
+            List of TranscriptSegmentOut objects within the time range
+        """
+        # Fetch segments with a larger page size, then filter
+        # NOTE: Media Indexer doesn't support time-based filtering yet,
+        # so we fetch all and filter client-side. This is still better than
+        # get_all_transcript_segments for large transcripts because we can
+        # stop early once we pass end_seconds.
+        all_segments: list[TranscriptSegmentOut] = []
+        offset = 0
+        page_size = 500
+
+        while True:
+            page = await self.get_transcript_segments(
+                transcription_id=transcription_id,
+                offset=offset,
+                limit=page_size,
+            )
+
+            for segment in page.items:
+                # Include segments that overlap with our time range
+                if segment.end_seconds >= start_seconds and segment.start_seconds <= end_seconds:
+                    all_segments.append(segment)
+                # Stop early if we've passed the end time
+                elif segment.start_seconds > end_seconds:
+                    break
+
+            # Check if we should stop
+            if offset + len(page.items) >= page.total:
+                break
+            # Stop if the last segment is past our end time
+            if page.items and page.items[-1].start_seconds > end_seconds:
+                break
+
+            offset += len(page.items)
+
+            if len(page.items) == 0:
+                break
+
+        logger.info(
+            "bounded_transcript_segments_fetched",
+            extra={
+                "transcription_id": str(transcription_id),
+                "start_seconds": start_seconds,
+                "end_seconds": end_seconds,
+                "segments_in_range": len(all_segments),
+            },
+        )
+
+        return all_segments
+
     async def get_all_transcript_segments(
         self,
         transcription_id: UUID,

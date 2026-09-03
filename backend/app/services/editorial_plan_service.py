@@ -54,6 +54,12 @@ class InvalidStrategyError(PlanError):
     pass
 
 
+class CanonicalizationError(PlanError):
+    """Raised when segment ID canonicalization fails."""
+
+    pass
+
+
 class EditorialPlanService:
     """
     Service for managing Short Editorial Plans.
@@ -91,46 +97,65 @@ class EditorialPlanService:
     async def _resolve_segment_ids_to_timestamps(
         self,
         transcription_id: UUID,
+        candidate_start_seconds: float,
+        candidate_end_seconds: float,
         start_segment_id: UUID | None,
         end_segment_id: UUID | None,
-    ) -> tuple[float | None, float | None]:
+    ) -> tuple[float, float]:
         """
         Resolve segment IDs to canonical timestamps via Media Indexer.
 
+        Uses bounded requests to fetch only the segments within the candidate
+        time range, avoiding the performance cost of loading entire transcripts.
+
         Args:
             transcription_id: ID of the transcription
+            candidate_start_seconds: Candidate start time for bounded fetch
+            candidate_end_seconds: Candidate end time for bounded fetch
             start_segment_id: Start segment ID to resolve
             end_segment_id: End segment ID to resolve
 
         Returns:
-            Tuple of (start_seconds, end_seconds) or (None, None) if no segment IDs
+            Tuple of (start_seconds, end_seconds)
+
+        Raises:
+            CanonicalizationError: If segment IDs cannot be resolved or are invalid
         """
         if not start_segment_id or not end_segment_id:
-            return None, None
+            raise CanonicalizationError(
+                "Segment IDs required for TRIM/ADD_CONTEXT strategies"
+            )
 
-        # Fetch all segments for this transcription
-        all_segments = await self.media_indexer_client.get_all_transcript_segments(
-            transcription_id
+        # Fetch only segments within candidate time range (bounded request)
+        segments = await self.media_indexer_client.get_transcript_segments_by_time(
+            transcription_id=transcription_id,
+            start_seconds=candidate_start_seconds,
+            end_seconds=candidate_end_seconds,
         )
 
         # Create canonicalizer and resolve
-        canonicalizer = CandidateCanonicalizer(all_segments)
+        canonicalizer = CandidateCanonicalizer(segments)
         start_segment = canonicalizer.get_segment_by_id(start_segment_id)
         end_segment = canonicalizer.get_segment_by_id(end_segment_id)
 
-        if not start_segment or not end_segment:
-            logger.warning(
-                f"Could not resolve segment IDs: start={start_segment_id}, end={end_segment_id}"
+        if not start_segment:
+            raise CanonicalizationError(
+                f"Start segment {start_segment_id} not found in transcript range "
+                f"[{candidate_start_seconds}s, {candidate_end_seconds}s]"
             )
-            return None, None
+
+        if not end_segment:
+            raise CanonicalizationError(
+                f"End segment {end_segment_id} not found in transcript range "
+                f"[{candidate_start_seconds}s, {candidate_end_seconds}s]"
+            )
 
         # Validate segment order
         if start_segment.start_seconds > end_segment.end_seconds:
-            logger.warning(
+            raise CanonicalizationError(
                 f"Invalid segment order: start ({start_segment.start_seconds}s) "
                 f"after end ({end_segment.end_seconds}s)"
             )
-            return None, None
 
         return start_segment.start_seconds, end_segment.end_seconds
 
@@ -213,27 +238,21 @@ class EditorialPlanService:
             )
 
         # Resolve segment IDs to canonical timestamps for TRIM/ADD_CONTEXT
+        # NOTE: USE_DIRECTLY and REJECT use candidate boundaries as-is
+        # REAUTHOR is not yet implemented
         resolved_start = candidate.canonical_start_seconds
         resolved_end = candidate.canonical_end_seconds
 
-        if (
-            analysis.recommended_strategy in ("TRIM", "ADD_CONTEXT")
-            and analysis.recommended_start_segment_id
-            and analysis.recommended_end_segment_id
-        ):
+        if analysis.recommended_strategy in ("TRIM", "ADD_CONTEXT"):
+            # This will raise CanonicalizationError if segments cannot be resolved
+            # We do NOT silently fallback - explicit failure is required
             resolved_start, resolved_end = await self._resolve_segment_ids_to_timestamps(
                 transcription_id=analysis.transcription_id,
+                candidate_start_seconds=candidate.canonical_start_seconds,
+                candidate_end_seconds=candidate.canonical_end_seconds,
                 start_segment_id=analysis.recommended_start_segment_id,
                 end_segment_id=analysis.recommended_end_segment_id,
             )
-            # Fallback to candidate boundaries if resolution fails
-            if resolved_start is None or resolved_end is None:
-                logger.warning(
-                    f"Could not resolve segment IDs for analysis {analysis_id}, "
-                    f"using candidate boundaries"
-                )
-                resolved_start = candidate.canonical_start_seconds
-                resolved_end = candidate.canonical_end_seconds
 
         # Compute fingerprint with resolved boundaries
         fingerprint = self._compute_fingerprint(
@@ -435,4 +454,5 @@ __all__ = [
     "AnalysisNotFoundError",
     "PlanAlreadyExistsError",
     "InvalidStrategyError",
+    "CanonicalizationError",
 ]

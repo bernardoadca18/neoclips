@@ -60,6 +60,20 @@ from app.services.editorial_plan_service import (
 from app.services.editorial_plan_service import (
     CandidateNotFoundError as PlanCandidateNotFoundError,
 )
+from app.services.editorial_plan_service import CanonicalizationError
+from app.services.clip_composition_service import (
+    ClipCompositionService,
+    CompositionAlreadyExistsError,
+    CompositionError,
+    PlanNotFoundError as CompositionPlanNotFoundError,
+    PlanNotReadyError,
+    UnsupportedStrategyError,
+)
+from app.schemas.clip_composition import (
+    ClipCompositionCreate,
+    ClipCompositionRead,
+    ClipCompositionUpdate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -568,3 +582,184 @@ async def get_plan_by_id(
         )
 
     return plan
+
+
+# --- Clip Composition Endpoints (Stage 5) ---
+
+
+@router.post(
+    "/plans/{plan_id}/composition",
+    response_model=ClipCompositionRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a clip composition from a plan",
+    description="Materialize an editorial plan into a clip composition ready for rendering.",
+)
+async def create_clip_composition(
+    plan_id: UUID,
+    request: ClipCompositionCreate | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    """
+    Create a clip composition from an editorial plan.
+
+    The plan must be in 'ready' status. Supported strategies:
+    - USE_DIRECTLY: Use source boundaries as-is
+    - TRIM: Trim to specified boundaries
+    - ADD_CONTEXT: Include context before/after
+
+    REAUTHOR is not yet implemented.
+    REJECT is invalid for composition.
+
+    Raises:
+        404: Plan not found
+        400: Plan not ready, unsupported strategy, or composition already exists
+    """
+    service = ClipCompositionService(session)
+
+    try:
+        composition = await service.create_composition_from_plan(
+            plan_id=plan_id,
+            composition_params=request.composition_params if request else None,
+        )
+        return composition
+
+    except CompositionPlanNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except PlanNotReadyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except CompositionAlreadyExistsError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+    except UnsupportedStrategyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except CompositionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.get(
+    "/plans/{plan_id}/composition",
+    response_model=ClipCompositionRead,
+    summary="Get composition for a plan",
+    description="Returns the clip composition for a plan if one exists.",
+)
+async def get_plan_composition(
+    plan_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    """
+    Get the clip composition for a plan.
+
+    Raises:
+        404: No composition found for plan
+    """
+    service = ClipCompositionService(session)
+
+    composition = await service.get_composition_by_plan(plan_id)
+
+    if not composition:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No composition found for plan {plan_id}",
+        )
+
+    return composition
+
+
+@router.get(
+    "/workflows/{workflow_id}/compositions",
+    response_model=list[ClipCompositionRead],
+    summary="List compositions for a workflow",
+    description="Returns all clip compositions for a workflow, ordered by creation date descending.",
+)
+async def list_workflow_compositions(
+    workflow_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> list[Any]:
+    """List all clip compositions for a workflow."""
+    service = ClipCompositionService(session)
+    return await service.get_compositions_by_workflow(workflow_id)
+
+
+@router.patch(
+    "/compositions/{composition_id}",
+    response_model=ClipCompositionRead,
+    summary="Update a clip composition",
+    description="Update composition status or render outputs.",
+)
+async def update_clip_composition(
+    composition_id: UUID,
+    request: ClipCompositionUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    """
+    Update a clip composition.
+
+    Typically used by rendering pipeline to update status and outputs.
+
+    Raises:
+        404: Composition not found
+        400: Invalid status
+    """
+    service = ClipCompositionService(session)
+
+    try:
+        composition = await service.update_status(
+            composition_id=composition_id,
+            status=request.status,
+            render_job_id=request.render_job_id,
+            output_media_id=request.output_media_id,
+        )
+        return composition
+
+    except CompositionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.get(
+    "/compositions/{composition_id}",
+    response_model=ClipCompositionRead,
+    summary="Get a clip composition by ID",
+)
+async def get_composition_by_id(
+    composition_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    """
+    Get a clip composition by ID.
+
+    Raises:
+        404: Composition not found
+    """
+    from sqlalchemy import select
+
+    from app.models.entities import ClipComposition
+
+    result = await session.execute(
+        select(ClipComposition).where(ClipComposition.id == composition_id)
+    )
+    composition = result.scalar_one_or_none()
+
+    if not composition:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Composition {composition_id} not found",
+        )
+
+    return composition

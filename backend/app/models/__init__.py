@@ -1,7 +1,18 @@
 """NeoClips domain models."""
 
 from app.models.base import TimestampMixin, UUIDPrimaryKey
-from app.models.entities import ClipSource, ClipWorkflow, SourcePolicy, WorkflowErrorHistory
+from app.models.entities import (
+    ClipCandidate,
+    ClipComposition,
+    ClipSource,
+    ClipWorkflow,
+    DiscoveryRun,
+    DiscoveryWindow,
+    EditorialSuitabilityAnalysis,
+    ShortEditorialPlan,
+    SourcePolicy,
+    WorkflowErrorHistory,
+)
 
 __all__ = [
     "UUIDPrimaryKey",
@@ -10,4 +21,10 @@ __all__ = [
     "ClipSource",
     "ClipWorkflow",
     "WorkflowErrorHistory",
+    "DiscoveryRun",
+    "DiscoveryWindow",
+    "ClipCandidate",
+    "EditorialSuitabilityAnalysis",
+    "ShortEditorialPlan",
+    "ClipComposition",
 ]

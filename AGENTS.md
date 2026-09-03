@@ -10,11 +10,14 @@ NeoClips is a clip discovery and production engine integrated with the NeoVids e
 **Stage 1 — Foundation** (Complete)
 **Stage 2 — Media Indexer Integration** (Complete)
 **Stage 3 — Transcript Clip Discovery** (Complete)
+**Stage 4 — Editorial Suite** (Complete)
+**Stage 5 — Clip Composition** (Complete)
 
 The following are implemented:
 - Core infrastructure (PostgreSQL, Redis, FastAPI, Celery)
 - Domain entities (SourcePolicy, ClipSource, ClipWorkflow, WorkflowErrorHistory)
 - Discovery entities (DiscoveryRun, DiscoveryWindow, ClipCandidate)
+- Editorial entities (EditorialSuitabilityAnalysis, ShortEditorialPlan, ClipComposition)
 - Repository/Service pattern
 - API endpoints with idempotency
 - Health endpoints
@@ -27,13 +30,18 @@ The following are implemented:
 - CandidateDeduplicator with temporal IoU
 - Discovery orchestration service and Celery tasks
 - Discovery API endpoints (/v1/discovery/)
+- Editorial API endpoints (/v1/editorial/)
+- Candidate shortlist and selection services
+- Editorial suitability analysis via 9Router
+- Short editorial plan management
+- Clip composition contract (Stage 5)
+- Bounded transcript retrieval for canonicalization
+- Explicit failure policy (no silent fallbacks)
 
 ## Not Yet Implemented (Future Stages)
 
 DO NOT implement these without explicit instruction:
-- Stage 4: Multimodal Observation Engine
-- Stage 5: Candidate Ranking
-- Stage 6: Video Composer Integration
+- Stage 6: Video Composer Integration (Rendering)
 - Stage 7: Packaging
 - Stage 8: QA
 

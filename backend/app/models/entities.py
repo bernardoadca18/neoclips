@@ -17,7 +17,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKey
@@ -163,6 +163,9 @@ class ClipWorkflow(Base, UUIDPrimaryKey, TimestampMixin):
     )
     discovery_runs: Mapped[list["DiscoveryRun"]] = relationship(
         "DiscoveryRun", back_populates="workflow", cascade="all, delete-orphan"
+    )
+    compositions: Mapped[list["ClipComposition"]] = relationship(
+        "ClipComposition", back_populates="workflow", cascade="all, delete-orphan"
     )
 
     __table_args__ = (
@@ -617,6 +620,9 @@ class ShortEditorialPlan(Base, UUIDPrimaryKey, TimestampMixin):
     analysis: Mapped["EditorialSuitabilityAnalysis | None"] = relationship(
         "EditorialSuitabilityAnalysis", back_populates="editorial_plans"
     )
+    compositions: Mapped[list["ClipComposition"]] = relationship(
+        "ClipComposition", back_populates="plan", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -642,5 +648,94 @@ class ShortEditorialPlan(Base, UUIDPrimaryKey, TimestampMixin):
         CheckConstraint(
             "duration_seconds > 0",
             name="ck_short_editorial_plan_duration_positive",
+        ),
+    )
+
+
+class ClipComposition(Base, UUIDPrimaryKey, TimestampMixin):
+    """
+    Represents the composition contract for producing a Short.
+
+    This is the Stage 5 entity that bridges editorial plans (Stage 4)
+    and rendering (Stage 6). It captures:
+    - Source material boundaries (from plan)
+    - Render profile (vertical_short_v1)
+    - Strategy-specific parameters
+    - Fingerprint for idempotency
+    """
+
+    __tablename__ = "clip_compositions"
+
+    # Lineage - all required for provenance
+    workflow_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clip_workflows.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clip_sources.id", ondelete="SET NULL"), nullable=True
+    )
+    plan_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("short_editorial_plans.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Source boundaries (from plan)
+    source_start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    source_end_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # Segment IDs for traceability (from plan)
+    source_start_segment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    source_end_segment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+    # Editorial strategy (from plan)
+    strategy: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    # Render profile - versioned for reproducibility
+    render_profile: Mapped[str] = mapped_column(
+        String(50), nullable=False, server_default="vertical_short_v1"
+    )
+
+    # Strategy-specific parameters (JSON)
+    # For ADD_CONTEXT: context_before_seconds, context_after_seconds
+    # For TRIM: trim_point_seconds
+    composition_params: Mapped[dict[str, typing.Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+
+    # Status
+    status: Mapped[str] = mapped_column(
+        String(50), nullable=False, server_default="pending"
+    )
+
+    # Render output (populated after rendering)
+    render_job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    output_media_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+    # Fingerprint for idempotency
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+
+    # Relationships
+    workflow: Mapped["ClipWorkflow"] = relationship("ClipWorkflow", back_populates="compositions")
+    plan: Mapped["ShortEditorialPlan"] = relationship("ShortEditorialPlan", back_populates="compositions")
+
+    __table_args__ = (
+        CheckConstraint(
+            """strategy IN ('USE_DIRECTLY', 'TRIM', 'ADD_CONTEXT')""",
+            name="ck_clip_composition_strategy",
+        ),
+        CheckConstraint(
+            "source_start_seconds >= 0",
+            name="ck_clip_composition_start",
+        ),
+        CheckConstraint(
+            "source_end_seconds > source_start_seconds",
+            name="ck_clip_composition_end_after_start",
+        ),
+        CheckConstraint(
+            "duration_seconds > 0",
+            name="ck_clip_composition_duration_positive",
+        ),
+        CheckConstraint(
+            """status IN ('pending', 'validating', 'ready', 'rendering', 'completed', 'failed')""",
+            name="ck_clip_composition_status",
         ),
     )

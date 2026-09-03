@@ -47,11 +47,15 @@ class CandidateSelectionService:
 
     Enforces validation rules:
     - Duplicate candidates cannot be selected
-    - Run must be in terminal state (completed, completed_with_errors, failed)
+    - Run must be in terminal state (completed, completed_with_errors only - NOT failed)
     - Selection rank is optional but must be >= 1
+
+    NOTE: "failed" is excluded from TERMINAL_STATES because fully failed runs
+    have no valid candidates to select.
     """
 
-    TERMINAL_STATES = {"completed", "completed_with_errors", "failed"}
+    # NOTE: "failed" is excluded - fully failed runs have no valid candidates
+    TERMINAL_STATES = {"completed", "completed_with_errors"}
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
