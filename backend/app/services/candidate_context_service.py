@@ -5,6 +5,7 @@ transcript, only the bounded segments needed for editorial analysis.
 """
 
 import logging
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -66,7 +67,7 @@ class CandidateContextService:
         candidate_id: UUID,
         context_before_seconds: float | None = None,
         context_after_seconds: float | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """
         Get bounded transcript context around a candidate.
 
@@ -142,8 +143,8 @@ class CandidateContextService:
         context_start = max(0.0, candidate_start - before)
         context_end = candidate_end + after
 
-        # Fetch segments from Media Indexer
-        segments = await self.media_indexer_client.get_transcript_segments(
+        # Fetch segments from Media Indexer using bounded temporal query
+        segments = await self.media_indexer_client.get_transcript_segments_by_time(
             transcription_id=source.transcription_id,
             start_seconds=context_start,
             end_seconds=context_end,
@@ -155,15 +156,15 @@ class CandidateContextService:
         context_after_segments = []
 
         for seg in segments:
-            seg_start = seg.get("start_seconds", 0.0)
-            seg_end = seg.get("end_seconds", 0.0)
+            seg_start = seg.start_seconds
+            seg_end = seg.end_seconds
 
             # Determine segment category based on overlap
             seg_dict = {
-                "id": seg.get("id"),
+                "id": seg.id,
                 "start_seconds": seg_start,
                 "end_seconds": seg_end,
-                "text": seg.get("text", ""),
+                "text": seg.text,
             }
 
             # Check if segment is within candidate bounds
@@ -191,7 +192,7 @@ class CandidateContextService:
         candidate_id: UUID,
         context_before_seconds: float | None = None,
         context_after_seconds: float | None = None,
-    ) -> tuple[list[dict], list[dict], list[dict]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         """
         Get segments formatted for LLM analysis.
 

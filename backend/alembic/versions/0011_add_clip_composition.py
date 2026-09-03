@@ -11,7 +11,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = "0011_add_clip_composition"
-down_revision = "0010_add_editorial_tables"
+down_revision = "e518eed5cce9"  # Chain after planning state migration
 branch_labels = None
 depends_on = None
 

@@ -67,7 +67,9 @@ class TestCandidateSelectionServiceInit:
         service = CandidateSelectionService(mock_session)
         assert service.session is mock_session
         assert "completed" in service.TERMINAL_STATES
-        assert "failed" in service.TERMINAL_STATES
+        assert "completed_with_errors" in service.TERMINAL_STATES
+        # NOTE: "failed" is intentionally excluded - fully failed runs have no valid candidates
+        assert "failed" not in service.TERMINAL_STATES
         assert "running" not in service.TERMINAL_STATES
 
 

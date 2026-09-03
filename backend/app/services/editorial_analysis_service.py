@@ -274,9 +274,9 @@ class EditorialAnalysisService:
             )
 
             # Call LLM via 9Router and get resolved model
-            result = await self.editorial_provider.analyze_candidate_with_model(context)
-            llm_response = result.response
-            raw_content = result.raw_content
+            provider_result = await self.editorial_provider.analyze_candidate_with_model(context)
+            llm_response = provider_result.response
+            raw_content = provider_result.raw_content
 
             # Update analysis with results
             analysis.standalone_score = llm_response.standalone_score
@@ -292,11 +292,11 @@ class EditorialAnalysisService:
             analysis.analysis_summary = llm_response.analysis_summary
             analysis.raw_llm_response = raw_content
             # Persist actual physical model from 9Router, never fallback to combo alias
-            if not result.resolved_model:
+            if not provider_result.resolved_model:
                 raise EditorialAnalysisError(
                     f"9Router did not return resolved_model for analysis {analysis_id}"
                 )
-            analysis.resolved_model = result.resolved_model
+            analysis.resolved_model = provider_result.resolved_model
             analysis.status = "completed"
             analysis.completed_at = datetime.now(UTC)
 
