@@ -105,6 +105,8 @@ class NineRouterEditorialProvider:
         system_prompt: str | None = None,
         prompt_id: str = "editorial_suitability_v1",
         prompt_version: str = "1.0.0",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> None:
         self.combo = combo or settings.nine_router_editorial_combo
         self.base_url = (base_url or settings.nine_router_base_url).rstrip("/")
@@ -113,6 +115,8 @@ class NineRouterEditorialProvider:
         self.prompt_id = prompt_id
         self.prompt_version = prompt_version
         self._system_prompt = system_prompt
+        self.temperature = temperature if temperature is not None else 0.3
+        self.max_tokens = max_tokens if max_tokens is not None else 1500
 
     def _build_system_prompt(self) -> str:
         """Build the system prompt for editorial analysis."""
@@ -211,8 +215,8 @@ Return JSON with your analysis."""
         payload = {
             "model": self.combo,
             "messages": messages,
-            "temperature": 0.3,
-            "max_tokens": 1500,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
         }
 
         headers = {"Content-Type": "application/json"}

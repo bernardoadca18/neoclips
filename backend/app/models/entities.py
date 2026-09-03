@@ -660,13 +660,19 @@ class ClipComposition(Base, UUIDPrimaryKey, TimestampMixin):
     and rendering (Stage 6). It captures:
     - Source material boundaries (from plan)
     - Render profile (vertical_short_v1)
-    - Strategy-specific parameters
+    - Audio/caption modes for rendering
     - Fingerprint for idempotency
+
+    V2 Changes:
+    - Removed composition_params (editorial params belong in analysis)
+    - Added analysis_id for full lineage
+    - Added composition_version for schema evolution
+    - Added audio_mode and caption_mode for render configuration
     """
 
     __tablename__ = "clip_compositions"
 
-    # Lineage - all required for provenance
+    # Lineage - full provenance chain
     workflow_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("clip_workflows.id", ondelete="CASCADE"), nullable=False
     )
@@ -676,6 +682,12 @@ class ClipComposition(Base, UUIDPrimaryKey, TimestampMixin):
     plan_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("short_editorial_plans.id", ondelete="CASCADE"), nullable=False
     )
+    analysis_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("editorial_suitability_analyses.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Composition version for schema evolution
+    composition_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="2")
 
     # Source boundaries (from plan)
     source_start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
@@ -694,11 +706,14 @@ class ClipComposition(Base, UUIDPrimaryKey, TimestampMixin):
         String(50), nullable=False, server_default="vertical_short_v1"
     )
 
-    # Strategy-specific parameters (JSON)
-    # For ADD_CONTEXT: context_before_seconds, context_after_seconds
-    # For TRIM: trim_point_seconds
-    composition_params: Mapped[dict[str, typing.Any] | None] = mapped_column(
-        JSONB, nullable=True
+    # Audio mode for rendering
+    audio_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="original"
+    )
+
+    # Caption mode for rendering
+    caption_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="none"
     )
 
     # Status
@@ -716,6 +731,9 @@ class ClipComposition(Base, UUIDPrimaryKey, TimestampMixin):
     # Relationships
     workflow: Mapped["ClipWorkflow"] = relationship("ClipWorkflow", back_populates="compositions")
     plan: Mapped["ShortEditorialPlan"] = relationship("ShortEditorialPlan", back_populates="compositions")
+    analysis: Mapped["EditorialSuitabilityAnalysis"] = relationship(
+        "EditorialSuitabilityAnalysis", back_populates="compositions"
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -737,5 +755,17 @@ class ClipComposition(Base, UUIDPrimaryKey, TimestampMixin):
         CheckConstraint(
             """status IN ('pending', 'validating', 'ready', 'rendering', 'completed', 'failed')""",
             name="ck_clip_composition_status",
+        ),
+        CheckConstraint(
+            """audio_mode IN ('original', 'mixed', 'replaced')""",
+            name="ck_clip_composition_audio_mode",
+        ),
+        CheckConstraint(
+            """caption_mode IN ('none', 'burned', 'sidecar')""",
+            name="ck_clip_composition_caption_mode",
+        ),
+        CheckConstraint(
+            "composition_version >= 1",
+            name="ck_clip_composition_version",
         ),
     )

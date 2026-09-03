@@ -55,8 +55,9 @@ class Settings(BaseSettings):
     media_indexer_transcription_timeout_seconds: int = 1800
     media_indexer_poll_interval_seconds: int = 5
 
-    # Video Composer (future stage)
-    video_composer_url: str | None = None
+    # Video Composer integration
+    video_composer_base_url: str = Field(default="http://localhost:8001")
+    video_composer_timeout_seconds: int = 30
 
     # 9Router LLM Gateway
     nine_router_base_url: str = Field(default="http://localhost:20128")

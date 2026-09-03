@@ -81,6 +81,8 @@ class EditorialAnalysisService:
         prompt_version: str,
         prompt_hash: str,
         requested_combo: str,
+        temperature: float,
+        max_tokens: int,
     ) -> str:
         """Compute SHA-256 fingerprint for idempotency.
 
@@ -91,6 +93,7 @@ class EditorialAnalysisService:
         - strategy_id/version: analysis strategy identity
         - prompt_id/version/hash: prompt configuration
         - requested_combo: LLM combo used
+        - temperature/max_tokens: LLM sampling parameters
         """
         data = json.dumps({
             "candidate_id": str(candidate_id),
@@ -104,6 +107,8 @@ class EditorialAnalysisService:
             "prompt_version": prompt_version,
             "prompt_hash": prompt_hash,
             "requested_combo": requested_combo,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
         }, sort_keys=True)
         return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
@@ -170,6 +175,8 @@ class EditorialAnalysisService:
             prompt_version=self.PROMPT_VERSION,
             prompt_hash=prompt_hash,
             requested_combo=self.editorial_provider.combo,
+            temperature=self.editorial_provider.temperature,
+            max_tokens=self.editorial_provider.max_tokens,
         )
 
         # Check for existing analysis with same fingerprint
@@ -291,11 +298,8 @@ class EditorialAnalysisService:
             analysis.recommended_end_segment_id = llm_response.recommended_end_segment_id
             analysis.analysis_summary = llm_response.analysis_summary
             analysis.raw_llm_response = raw_content
-            # Persist actual physical model from 9Router, never fallback to combo alias
-            if not provider_result.resolved_model:
-                raise EditorialAnalysisError(
-                    f"9Router did not return resolved_model for analysis {analysis_id}"
-                )
+                # Persist actual physical model from 9Router as optional telemetry
+            # resolved_model is telemetry - NULL is acceptable if 9Router doesn't return it
             analysis.resolved_model = provider_result.resolved_model
             analysis.status = "completed"
             analysis.completed_at = datetime.now(UTC)

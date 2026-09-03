@@ -619,7 +619,9 @@ async def create_clip_composition(
     try:
         composition = await service.create_composition_from_plan(
             plan_id=plan_id,
-            composition_params=request.composition_params if request else None,
+            render_profile=request.render_profile if request else "vertical_short_v1",
+            audio_mode=request.audio_mode if request else "original",
+            caption_mode=request.caption_mode if request else "none",
         )
         return composition
 
@@ -763,3 +765,158 @@ async def get_composition_by_id(
         )
 
     return composition
+
+
+# ============================================================================
+# Rendering Endpoints (Stage 6)
+# ============================================================================
+
+
+@router.post(
+    "/compositions/{composition_id}/render",
+    response_model=ClipCompositionRead,
+    summary="Submit a render job for a composition",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def submit_render_job(
+    composition_id: UUID,
+    source_media_id: UUID = Query(..., description="UUID of the source media to render from"),
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    """
+    Submit a render job to Video Composer for a composition.
+
+    The composition must be in 'ready' status. This endpoint submits
+    the render job and returns the composition with status 'rendering'.
+
+    Raises:
+        404: Composition not found
+        400: Composition not ready for rendering
+    """
+    from app.services.rendering_service import (
+        CompositionNotFoundError,
+        CompositionNotReadyError,
+        RenderingError,
+        RenderingService,
+    )
+
+    service = RenderingService(session)
+
+    try:
+        composition = await service.submit_render_job(
+            composition_id=composition_id,
+            source_media_id=source_media_id,
+        )
+        return composition
+
+    except CompositionNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+    except CompositionNotReadyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+    except RenderingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to submit render job: {e}",
+        )
+
+
+@router.post(
+    "/compositions/{composition_id}/poll-render",
+    response_model=ClipCompositionRead,
+    summary="Poll render job status",
+)
+async def poll_render_status(
+    composition_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    """
+    Poll the render job status for a composition.
+
+    This is a one-shot poll that checks the current status with Video Composer
+    and updates the composition accordingly. For ongoing monitoring, use
+    Celery beat or an external scheduler.
+
+    Raises:
+        404: Composition not found
+        500: Failed to poll render job
+    """
+    from app.services.rendering_service import (
+        CompositionNotFoundError,
+        RenderJobFailedError,
+        RenderingError,
+        RenderingService,
+    )
+
+    service = RenderingService(session)
+
+    try:
+        composition = await service.poll_render_status(composition_id)
+        return composition
+
+    except CompositionNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+    except RenderJobFailedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+    except RenderingError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to poll render job: {e}",
+        )
+
+
+@router.get(
+    "/compositions/{composition_id}/output-media",
+    summary="Get output media metadata for a completed composition",
+)
+async def get_output_media(
+    composition_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> Any:
+    """
+    Get output media metadata for a completed composition.
+
+    Returns media metadata from Video Composer if the composition
+    has completed rendering.
+
+    Raises:
+        404: Composition not found or output media not available
+    """
+    from app.services.rendering_service import (
+        CompositionNotFoundError,
+        RenderingService,
+    )
+
+    service = RenderingService(session)
+
+    try:
+        media = await service.get_output_media(composition_id)
+
+        if not media:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Output media not available for composition {composition_id}",
+            )
+
+        return media.model_dump()
+
+    except CompositionNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )

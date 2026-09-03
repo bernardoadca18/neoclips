@@ -9,10 +9,34 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class ClipCompositionCreate(BaseModel):
     """Request body for creating a clip composition."""
 
-    composition_params: dict | None = Field(
-        default=None,
-        description="Strategy-specific parameters. For ADD_CONTEXT: {context_before_seconds, context_after_seconds}. For TRIM: {trim_point_seconds}.",
+    render_profile: str = Field(
+        default="vertical_short_v1",
+        description="Render profile to use for composition.",
     )
+    audio_mode: str = Field(
+        default="original",
+        description="Audio handling mode: original, mixed, or replaced.",
+    )
+    caption_mode: str = Field(
+        default="none",
+        description="Caption handling mode: none, burned, or sidecar.",
+    )
+
+    @field_validator("audio_mode")
+    @classmethod
+    def validate_audio_mode(cls, v: str) -> str:
+        valid = {"original", "mixed", "replaced"}
+        if v not in valid:
+            raise ValueError(f"audio_mode must be one of {valid}")
+        return v
+
+    @field_validator("caption_mode")
+    @classmethod
+    def validate_caption_mode(cls, v: str) -> str:
+        valid = {"none", "burned", "sidecar"}
+        if v not in valid:
+            raise ValueError(f"caption_mode must be one of {valid}")
+        return v
 
     model_config = ConfigDict(extra="forbid")
 
@@ -24,6 +48,7 @@ class ClipCompositionRead(BaseModel):
     workflow_id: UUID
     source_id: UUID | None
     plan_id: UUID
+    analysis_id: UUID | None
     source_start_seconds: float
     source_end_seconds: float
     duration_seconds: float
@@ -31,7 +56,9 @@ class ClipCompositionRead(BaseModel):
     source_end_segment_id: UUID | None
     strategy: str
     render_profile: str
-    composition_params: dict | None
+    composition_version: int
+    audio_mode: str
+    caption_mode: str
     status: str
     render_job_id: UUID | None
     output_media_id: UUID | None

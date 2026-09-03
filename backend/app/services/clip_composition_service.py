@@ -80,7 +80,8 @@ class ClipCompositionService:
         source_start_seconds: float,
         source_end_seconds: float,
         render_profile: str,
-        composition_params: dict | None,
+        audio_mode: str,
+        caption_mode: str,
     ) -> str:
         """Compute SHA-256 fingerprint for composition idempotency.
 
@@ -89,7 +90,8 @@ class ClipCompositionService:
         - strategy: how to process the source
         - boundaries: source start/end times
         - render_profile: versioned rendering configuration
-        - composition_params: strategy-specific parameters
+        - audio_mode: audio handling mode
+        - caption_mode: caption handling mode
         """
         data = json.dumps({
             "plan_id": str(plan_id),
@@ -97,23 +99,71 @@ class ClipCompositionService:
             "source_start_seconds": source_start_seconds,
             "source_end_seconds": source_end_seconds,
             "render_profile": render_profile,
-            "composition_params": composition_params or {},
+            "audio_mode": audio_mode,
+            "caption_mode": caption_mode,
         }, sort_keys=True)
         return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+    async def create_composition_from_analysis(
+        self,
+        analysis_id: UUID,
+        render_profile: str = "vertical_short_v1",
+        audio_mode: str = "original",
+        caption_mode: str = "none",
+    ) -> ClipComposition:
+        """
+        Create a clip composition directly from an analysis.
+
+        This creates both the editorial plan AND the composition in one step,
+        useful for automated workflows that don't require human review.
+
+        Args:
+            analysis_id: UUID of the completed editorial analysis
+            render_profile: Render profile to use (default: vertical_short_v1)
+            audio_mode: Audio handling mode (default: original)
+            caption_mode: Caption handling mode (default: none)
+
+        Returns:
+            Created ClipComposition
+
+        Raises:
+            PlanNotFoundError: If analysis doesn't exist
+            PlanNotReadyError: If analysis is not completed
+            CompositionAlreadyExistsError: If composition already exists
+            UnsupportedStrategyError: If strategy is REAUTHOR or REJECT
+        """
+        from app.services.editorial_plan_service import EditorialPlanService
+
+        # Create plan from analysis first
+        plan_service = EditorialPlanService(self.session, None)  # type: ignore
+        plan = await plan_service.create_plan_from_analysis(analysis_id)
+
+        # Transition plan to ready
+        plan = await plan_service.update_plan_status(plan.id, "ready")
+
+        # Now create composition from the plan
+        return await self.create_composition_from_plan(
+            plan_id=plan.id,
+            render_profile=render_profile,
+            audio_mode=audio_mode,
+            caption_mode=caption_mode,
+        )
 
     async def create_composition_from_plan(
         self,
         plan_id: UUID,
-        composition_params: dict | None = None,
+        render_profile: str = "vertical_short_v1",
+        audio_mode: str = "original",
+        caption_mode: str = "none",
     ) -> ClipComposition:
         """
         Create a clip composition from an editorial plan.
 
         Args:
             plan_id: UUID of the editorial plan
-            composition_params: Optional strategy-specific parameters
-                For ADD_CONTEXT: {"context_before_seconds": float, "context_after_seconds": float}
-                For TRIM: {"trim_point_seconds": float}
+            render_profile: Render profile to use (default: vertical_short_v1)
+            audio_mode: Audio handling mode (default: original)
+            caption_mode: Caption handling mode (default: none)
 
         Returns:
             Created ClipComposition
@@ -174,8 +224,9 @@ class ClipCompositionService:
             strategy=plan.strategy,
             source_start_seconds=plan.source_start_seconds,
             source_end_seconds=plan.source_end_seconds,
-            render_profile=self.RENDER_PROFILE_VERSION,
-            composition_params=composition_params,
+            render_profile=render_profile,
+            audio_mode=audio_mode,
+            caption_mode=caption_mode,
         )
 
         # Create composition
@@ -183,14 +234,17 @@ class ClipCompositionService:
             workflow_id=plan.workflow_id,
             source_id=plan.source_id,
             plan_id=plan.id,
+            analysis_id=plan.analysis_id,
             source_start_seconds=plan.source_start_seconds,
             source_end_seconds=plan.source_end_seconds,
             duration_seconds=plan.duration_seconds,
             source_start_segment_id=plan.source_start_segment_id,
             source_end_segment_id=plan.source_end_segment_id,
             strategy=plan.strategy,
-            render_profile=self.RENDER_PROFILE_VERSION,
-            composition_params=composition_params,
+            render_profile=render_profile,
+            composition_version=2,
+            audio_mode=audio_mode,
+            caption_mode=caption_mode,
             status="pending",
             fingerprint=fingerprint,
         )

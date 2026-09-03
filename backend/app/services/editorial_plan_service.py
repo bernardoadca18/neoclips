@@ -101,19 +101,28 @@ class EditorialPlanService:
         candidate_end_seconds: float,
         start_segment_id: UUID | None,
         end_segment_id: UUID | None,
+        strategy: str = "TRIM",
+        context_before_seconds: float = 0.0,
+        context_after_seconds: float = 0.0,
     ) -> tuple[float, float]:
         """
         Resolve segment IDs to canonical timestamps via Media Indexer.
 
-        Uses bounded requests to fetch only the segments within the candidate
+        Uses bounded requests to fetch only the segments within the authorized
         time range, avoiding the performance cost of loading entire transcripts.
+
+        For TRIM strategy: authorized window is the candidate bounds only.
+        For ADD_CONTEXT strategy: authorized window is extended by context_before/after.
 
         Args:
             transcription_id: ID of the transcription
-            candidate_start_seconds: Candidate start time for bounded fetch
-            candidate_end_seconds: Candidate end time for bounded fetch
+            candidate_start_seconds: Candidate start time
+            candidate_end_seconds: Candidate end time
             start_segment_id: Start segment ID to resolve
             end_segment_id: End segment ID to resolve
+            strategy: Editorial strategy (TRIM or ADD_CONTEXT)
+            context_before_seconds: Context window before candidate (ADD_CONTEXT only)
+            context_after_seconds: Context window after candidate (ADD_CONTEXT only)
 
         Returns:
             Tuple of (start_seconds, end_seconds)
@@ -126,11 +135,21 @@ class EditorialPlanService:
                 "Segment IDs required for TRIM/ADD_CONTEXT strategies"
             )
 
-        # Fetch only segments within candidate time range (bounded request)
+        # Compute authorized window based on strategy
+        if strategy == "ADD_CONTEXT":
+            # For ADD_CONTEXT, extend the window by the analysis context bounds
+            authorized_start = max(0.0, candidate_start_seconds - context_before_seconds)
+            authorized_end = candidate_end_seconds + context_after_seconds
+        else:
+            # For TRIM, only the candidate bounds are authorized
+            authorized_start = candidate_start_seconds
+            authorized_end = candidate_end_seconds
+
+        # Fetch only segments within authorized time range (bounded request)
         segments = await self.media_indexer_client.get_transcript_segments_by_time(
             transcription_id=transcription_id,
-            start_seconds=candidate_start_seconds,
-            end_seconds=candidate_end_seconds,
+            start_seconds=authorized_start,
+            end_seconds=authorized_end,
         )
 
         # Create canonicalizer and resolve
@@ -141,13 +160,13 @@ class EditorialPlanService:
         if not start_segment:
             raise CanonicalizationError(
                 f"Start segment {start_segment_id} not found in transcript range "
-                f"[{candidate_start_seconds}s, {candidate_end_seconds}s]"
+                f"[{authorized_start}s, {authorized_end}s]"
             )
 
         if not end_segment:
             raise CanonicalizationError(
                 f"End segment {end_segment_id} not found in transcript range "
-                f"[{candidate_start_seconds}s, {candidate_end_seconds}s]"
+                f"[{authorized_start}s, {authorized_end}s]"
             )
 
         # Validate segment order
@@ -252,7 +271,40 @@ class EditorialPlanService:
                 candidate_end_seconds=candidate.canonical_end_seconds,
                 start_segment_id=analysis.recommended_start_segment_id,
                 end_segment_id=analysis.recommended_end_segment_id,
+                strategy=analysis.recommended_strategy,
+                context_before_seconds=analysis.context_before_seconds,
+                context_after_seconds=analysis.context_after_seconds,
             )
+
+            # Validate strategy-specific invariants
+            if analysis.recommended_strategy == "TRIM":
+                # TRIM invariant: resolved boundaries must be within candidate bounds
+                if resolved_start < candidate.canonical_start_seconds:
+                    raise CanonicalizationError(
+                        f"TRIM invariant violated: resolved start ({resolved_start}s) "
+                        f"is before candidate start ({candidate.canonical_start_seconds}s)"
+                    )
+                if resolved_end > candidate.canonical_end_seconds:
+                    raise CanonicalizationError(
+                        f"TRIM invariant violated: resolved end ({resolved_end}s) "
+                        f"is after candidate end ({candidate.canonical_end_seconds}s)"
+                    )
+
+            elif analysis.recommended_strategy == "ADD_CONTEXT":
+                # ADD_CONTEXT invariant: resolved boundaries must be within authorized context window
+                authorized_start = max(0.0, candidate.canonical_start_seconds - analysis.context_before_seconds)
+                authorized_end = candidate.canonical_end_seconds + analysis.context_after_seconds
+
+                if resolved_start < authorized_start:
+                    raise CanonicalizationError(
+                        f"ADD_CONTEXT invariant violated: resolved start ({resolved_start}s) "
+                        f"is before authorized window start ({authorized_start}s)"
+                    )
+                if resolved_end > authorized_end:
+                    raise CanonicalizationError(
+                        f"ADD_CONTEXT invariant violated: resolved end ({resolved_end}s) "
+                        f"is after authorized window end ({authorized_end}s)"
+                    )
 
         # Compute fingerprint with resolved boundaries
         fingerprint = self._compute_fingerprint(
@@ -288,6 +340,12 @@ class EditorialPlanService:
         self.session.add(plan)
         await self.session.commit()
         await self.session.refresh(plan)
+
+        # Transition workflow to 'planning' state if this is the first plan
+        if workflow.status == "awaiting_selection":
+            workflow.status = "planning"
+            await self.session.commit()
+            logger.info(f"Transitioned workflow {workflow.id} to 'planning' state")
 
         logger.info(f"Created plan {plan.id} from analysis {analysis_id}")
         return plan
