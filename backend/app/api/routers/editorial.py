@@ -14,6 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.clients.media_indexer_client import MediaIndexerClient, get_media_indexer_client
 from app.core.database import get_session
 from app.schemas.editorial import (
     CandidateSelectionRequest,
@@ -25,33 +26,40 @@ from app.schemas.editorial import (
     ShortEditorialPlanRead,
     ShortEditorialPlanUpdate,
 )
+from app.services.candidate_context_service import CandidateContextService
+from app.services.candidate_selection_service import (
+    CandidateNotFoundError as SelectionCandidateNotFoundError,
+)
 from app.services.candidate_selection_service import (
     CandidateSelectionService,
-    CandidateNotFoundError as SelectionCandidateNotFoundError,
     DuplicateSelectionError,
     RunNotTerminalError,
     SelectionError,
 )
 from app.services.candidate_shortlist_service import (
     CandidateShortlistService,
+)
+from app.services.candidate_shortlist_service import (
     RunNotFoundError as ShortlistRunNotFoundError,
+)
+from app.services.candidate_shortlist_service import (
     RunNotTerminalError as ShortlistRunNotTerminalError,
 )
 from app.services.editorial_analysis_service import (
-    EditorialAnalysisService,
-    EditorialAnalysisError,
     CandidateNotReadyError,
+    EditorialAnalysisError,
+    EditorialAnalysisService,
 )
 from app.services.editorial_plan_service import (
-    EditorialPlanService,
-    PlanError,
-    CandidateNotFoundError as PlanCandidateNotFoundError,
     AnalysisNotFoundError,
-    PlanAlreadyExistsError,
+    EditorialPlanService,
     InvalidStrategyError,
+    PlanAlreadyExistsError,
+    PlanError,
 )
-from app.services.candidate_context_service import CandidateContextService
-from app.clients.media_indexer_client import MediaIndexerClient
+from app.services.editorial_plan_service import (
+    CandidateNotFoundError as PlanCandidateNotFoundError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -346,6 +354,7 @@ async def get_analysis_by_id(
         404: Analysis not found
     """
     from sqlalchemy import select
+
     from app.models.entities import EditorialSuitabilityAnalysis
 
     result = await session.execute(
@@ -378,6 +387,7 @@ async def create_editorial_plan(
     candidate_id: UUID,
     request: ShortEditorialPlanCreate,
     session: AsyncSession = Depends(get_session),
+    media_indexer: MediaIndexerClient = Depends(get_media_indexer_client),
 ) -> Any:
     """
     Create an editorial plan for a candidate.
@@ -391,7 +401,7 @@ async def create_editorial_plan(
         400: Invalid strategy or plan already exists
         409: Plan already exists for candidate
     """
-    service = EditorialPlanService(session)
+    service = EditorialPlanService(session, media_indexer)
 
     try:
         if request.analysis_id:
@@ -449,6 +459,7 @@ async def create_editorial_plan(
 async def get_candidate_plan(
     candidate_id: UUID,
     session: AsyncSession = Depends(get_session),
+    media_indexer: MediaIndexerClient = Depends(get_media_indexer_client),
 ) -> Any:
     """
     Get the editorial plan for a candidate.
@@ -456,7 +467,7 @@ async def get_candidate_plan(
     Raises:
         404: No plan found for candidate
     """
-    service = EditorialPlanService(session)
+    service = EditorialPlanService(session, media_indexer)
 
     plan = await service.get_plan_by_candidate(candidate_id)
 
@@ -478,9 +489,10 @@ async def get_candidate_plan(
 async def list_workflow_plans(
     workflow_id: UUID,
     session: AsyncSession = Depends(get_session),
+    media_indexer: MediaIndexerClient = Depends(get_media_indexer_client),
 ) -> list[Any]:
     """List all editorial plans for a workflow."""
-    service = EditorialPlanService(session)
+    service = EditorialPlanService(session, media_indexer)
     return await service.get_plans_by_workflow(workflow_id)
 
 
@@ -494,6 +506,7 @@ async def update_editorial_plan(
     plan_id: UUID,
     request: ShortEditorialPlanUpdate,
     session: AsyncSession = Depends(get_session),
+    media_indexer: MediaIndexerClient = Depends(get_media_indexer_client),
 ) -> Any:
     """
     Update an editorial plan.
@@ -502,7 +515,7 @@ async def update_editorial_plan(
         404: Plan not found
         400: Invalid status or other validation error
     """
-    service = EditorialPlanService(session)
+    service = EditorialPlanService(session, media_indexer)
 
     try:
         # For now, only support status updates
@@ -540,6 +553,7 @@ async def get_plan_by_id(
         404: Plan not found
     """
     from sqlalchemy import select
+
     from app.models.entities import ShortEditorialPlan
 
     result = await session.execute(

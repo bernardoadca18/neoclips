@@ -34,6 +34,12 @@ class RunNotTerminalError(ShortlistError):
     pass
 
 
+class RunFailedError(ShortlistError):
+    """Raised when run has fully failed status."""
+
+    pass
+
+
 class CandidateShortlistService:
     """
     Service for retrieving candidate shortlist from a discovery run.
@@ -90,6 +96,12 @@ class CandidateShortlistService:
         if run.status not in terminal_states:
             raise RunNotTerminalError(
                 f"Run {run_id} is not in terminal state (current: {run.status})"
+            )
+
+        # Exclude fully failed runs from normal selection
+        if run.status == "failed":
+            raise RunFailedError(
+                f"Run {run_id} has fully failed and cannot be used for selection"
             )
 
         # Build query for candidates
@@ -208,4 +220,5 @@ __all__ = [
     "ShortlistError",
     "RunNotFoundError",
     "RunNotTerminalError",
+    "RunFailedError",
 ]

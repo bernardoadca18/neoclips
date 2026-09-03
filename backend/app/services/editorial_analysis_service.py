@@ -13,13 +13,12 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.models.entities import ClipCandidate, EditorialSuitabilityAnalysis
 from app.services.candidate_context_service import CandidateContextService
 from app.services.ninerouter_editorial_provider import (
     CandidateContext,
-    NineRouterEditorialProvider,
     NineRouterEditorialError,
+    NineRouterEditorialProvider,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,12 +71,40 @@ class EditorialAnalysisService:
     def _compute_request_fingerprint(
         self,
         candidate_id: UUID,
+        source_id: UUID,
+        transcription_id: UUID,
         context_before: float,
         context_after: float,
+        strategy_id: str,
+        strategy_version: str,
+        prompt_id: str,
+        prompt_version: str,
         prompt_hash: str,
+        requested_combo: str,
     ) -> str:
-        """Compute SHA-256 fingerprint for idempotency."""
-        data = f"{candidate_id}:{context_before}:{context_after}:{prompt_hash}"
+        """Compute SHA-256 fingerprint for idempotency.
+
+        Includes all parameters that affect analysis identity:
+        - candidate_id: the candidate being analyzed
+        - source_id/transcription_id: media identity
+        - context_before/after: context window configuration
+        - strategy_id/version: analysis strategy identity
+        - prompt_id/version/hash: prompt configuration
+        - requested_combo: LLM combo used
+        """
+        data = json.dumps({
+            "candidate_id": str(candidate_id),
+            "source_id": str(source_id),
+            "transcription_id": str(transcription_id),
+            "context_before": context_before,
+            "context_after": context_after,
+            "strategy_id": strategy_id,
+            "strategy_version": strategy_version,
+            "prompt_id": prompt_id,
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "requested_combo": requested_combo,
+        }, sort_keys=True)
         return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
     async def get_or_create_analysis(
@@ -117,10 +144,32 @@ class EditorialAnalysisService:
                 f"Candidate {candidate_id} is marked as duplicate and cannot be analyzed"
             )
 
+        if not candidate.selected:
+            raise CandidateNotReadyError(
+                f"Candidate {candidate_id} must be selected before analysis"
+            )
+
+        # Get context to obtain source_id and transcription_id for fingerprint
+        context = await self.context_service.get_candidate_context(
+            candidate_id=candidate_id,
+            context_before_seconds=context_before_seconds,
+            context_after_seconds=context_after_seconds,
+        )
+
         # Compute fingerprint for idempotency
         prompt_hash = self.editorial_provider._get_prompt_hash() or ""
         fingerprint = self._compute_request_fingerprint(
-            candidate_id, context_before_seconds, context_after_seconds, prompt_hash
+            candidate_id=candidate_id,
+            source_id=UUID(context["source_id"]),
+            transcription_id=UUID(context["transcription_id"]),
+            context_before=context_before_seconds,
+            context_after=context_after_seconds,
+            strategy_id=self.STRATEGY_ID,
+            strategy_version=self.STRATEGY_VERSION,
+            prompt_id=self.PROMPT_ID,
+            prompt_version=self.PROMPT_VERSION,
+            prompt_hash=prompt_hash,
+            requested_combo=self.editorial_provider.combo,
         )
 
         # Check for existing analysis with same fingerprint
@@ -135,13 +184,7 @@ class EditorialAnalysisService:
             logger.info(f"Found existing analysis {existing.id} for candidate {candidate_id}")
             return existing
 
-        # Create new analysis record
-        context = await self.context_service.get_candidate_context(
-            candidate_id=candidate_id,
-            context_before_seconds=context_before_seconds,
-            context_after_seconds=context_after_seconds,
-        )
-
+        # Create new analysis record (context already fetched for fingerprint)
         analysis = EditorialSuitabilityAnalysis(
             candidate_id=candidate_id,
             source_id=UUID(context["source_id"]),
@@ -230,8 +273,10 @@ class EditorialAnalysisService:
                 context_after_segments=after_segments,
             )
 
-            # Call LLM via 9Router
-            llm_response, raw_content = await self.editorial_provider.analyze_candidate(context)
+            # Call LLM via 9Router and get resolved model
+            result = await self.editorial_provider.analyze_candidate_with_model(context)
+            llm_response = result.response
+            raw_content = result.raw_content
 
             # Update analysis with results
             analysis.standalone_score = llm_response.standalone_score
@@ -246,7 +291,7 @@ class EditorialAnalysisService:
             analysis.recommended_end_segment_id = llm_response.recommended_end_segment_id
             analysis.analysis_summary = llm_response.analysis_summary
             analysis.raw_llm_response = raw_content
-            analysis.resolved_model = self.editorial_provider.combo  # Will be updated with actual resolved model
+            analysis.resolved_model = result.resolved_model or self.editorial_provider.combo
             analysis.status = "completed"
             analysis.completed_at = datetime.now(UTC)
 

@@ -28,6 +28,14 @@ from app.services.editorial_plan_service import (
 
 
 @pytest.fixture
+def mock_media_indexer_client() -> AsyncMock:
+    """Create a mock Media Indexer client."""
+    client = AsyncMock()
+    client.get_all_transcript_segments = AsyncMock(return_value=[])
+    return client
+
+
+@pytest.fixture
 def mock_session() -> AsyncMock:
     """Create a mock async session."""
     session = AsyncMock(spec=AsyncSession)
@@ -124,9 +132,9 @@ def sample_plan(sample_candidate: ClipCandidate, sample_workflow: ClipWorkflow) 
 class TestEditorialPlanServiceInit:
     """Tests for service initialization."""
 
-    def test_init(self, mock_session: AsyncMock) -> None:
+    def test_init(self, mock_session: AsyncMock, mock_media_indexer_client: AsyncMock) -> None:
         """Test service initialization."""
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
         assert service.session is mock_session
         assert service.PLAN_VERSION == "1.0.0"
         assert "USE_DIRECTLY" in service.VALID_STRATEGIES
@@ -136,9 +144,9 @@ class TestEditorialPlanServiceInit:
 class TestComputeFingerprint:
     """Tests for fingerprint computation."""
 
-    def test_fingerprint_deterministic(self, mock_session: AsyncMock) -> None:
+    def test_fingerprint_deterministic(self, mock_session: AsyncMock, mock_media_indexer_client: AsyncMock) -> None:
         """Test that fingerprint is deterministic."""
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
 
         candidate_id = uuid4()
         fp1 = service._compute_fingerprint(candidate_id, "USE_DIRECTLY", 100.0, 160.0)
@@ -147,9 +155,9 @@ class TestComputeFingerprint:
         assert fp1 == fp2
         assert len(fp1) == 64  # SHA-256 hex digest
 
-    def test_fingerprint_different_strategy(self, mock_session: AsyncMock) -> None:
+    def test_fingerprint_different_strategy(self, mock_session: AsyncMock, mock_media_indexer_client: AsyncMock) -> None:
         """Test that different strategies produce different fingerprints."""
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
 
         candidate_id = uuid4()
         fp1 = service._compute_fingerprint(candidate_id, "USE_DIRECTLY", 100.0, 160.0)
@@ -195,7 +203,7 @@ class TestCreatePlanFromAnalysis:
 
         mock_session.execute.side_effect = execute_side_effect
 
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
         plan = await service.create_plan_from_analysis(sample_analysis.id)
 
         assert plan is not None
@@ -203,13 +211,13 @@ class TestCreatePlanFromAnalysis:
         mock_session.commit.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_rejects_missing_analysis(self, mock_session: AsyncMock) -> None:
+    async def test_rejects_missing_analysis(self, mock_session: AsyncMock, mock_media_indexer_client: AsyncMock) -> None:
         """Test that missing analysis raises error."""
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_session.execute.return_value = mock_result
 
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
 
         with pytest.raises(AnalysisNotFoundError):
             await service.create_plan_from_analysis(uuid4())
@@ -227,7 +235,7 @@ class TestCreatePlanFromAnalysis:
         mock_result.scalar_one_or_none.return_value = sample_analysis
         mock_session.execute.return_value = mock_result
 
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
 
         with pytest.raises(PlanError) as exc_info:
             await service.create_plan_from_analysis(sample_analysis.id)
@@ -259,7 +267,7 @@ class TestCreateManualPlan:
 
         mock_session.execute.side_effect = execute_side_effect
 
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
         plan = await service.create_manual_plan(
             candidate_id=sample_candidate.id,
             strategy="TRIM",
@@ -271,9 +279,9 @@ class TestCreateManualPlan:
         mock_session.add.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_rejects_invalid_strategy(self, mock_session: AsyncMock) -> None:
+    async def test_rejects_invalid_strategy(self, mock_session: AsyncMock, mock_media_indexer_client: AsyncMock) -> None:
         """Test that invalid strategy raises error."""
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
 
         with pytest.raises(InvalidStrategyError):
             await service.create_manual_plan(
@@ -284,9 +292,9 @@ class TestCreateManualPlan:
             )
 
     @pytest.mark.asyncio
-    async def test_requires_rejection_reason(self, mock_session: AsyncMock) -> None:
+    async def test_requires_rejection_reason(self, mock_session: AsyncMock, mock_media_indexer_client: AsyncMock) -> None:
         """Test that REJECT strategy requires reason."""
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
 
         with pytest.raises(PlanError) as exc_info:
             await service.create_manual_plan(
@@ -314,28 +322,28 @@ class TestUpdatePlanStatus:
         mock_result.scalar_one_or_none.return_value = sample_plan
         mock_session.execute.return_value = mock_result
 
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
         result = await service.update_plan_status(sample_plan.id, "ready")
 
         assert result.status == "ready"
         mock_session.commit.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_rejects_invalid_status(self, mock_session: AsyncMock) -> None:
+    async def test_rejects_invalid_status(self, mock_session: AsyncMock, mock_media_indexer_client: AsyncMock) -> None:
         """Test that invalid status raises error."""
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
 
         with pytest.raises(PlanError):
             await service.update_plan_status(uuid4(), "invalid_status")
 
     @pytest.mark.asyncio
-    async def test_rejects_missing_plan(self, mock_session: AsyncMock) -> None:
+    async def test_rejects_missing_plan(self, mock_session: AsyncMock, mock_media_indexer_client: AsyncMock) -> None:
         """Test that missing plan raises error."""
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_session.execute.return_value = mock_result
 
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
 
         with pytest.raises(PlanError) as exc_info:
             await service.update_plan_status(uuid4(), "ready")
@@ -357,19 +365,19 @@ class TestGetPlanByCandidate:
         mock_result.scalar_one_or_none.return_value = sample_plan
         mock_session.execute.return_value = mock_result
 
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
         result = await service.get_plan_by_candidate(sample_plan.candidate_id)
 
         assert result == sample_plan
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_not_found(self, mock_session: AsyncMock) -> None:
+    async def test_returns_none_when_not_found(self, mock_session: AsyncMock, mock_media_indexer_client: AsyncMock) -> None:
         """Test returning None when no plan exists."""
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_session.execute.return_value = mock_result
 
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
         result = await service.get_plan_by_candidate(uuid4())
 
         assert result is None
@@ -391,14 +399,14 @@ class TestGetPlansByWorkflow:
         mock_result.scalars.return_value = mock_scalars
         mock_session.execute.return_value = mock_result
 
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
         result = await service.get_plans_by_workflow(sample_plan.workflow_id)
 
         assert len(result) == 1
         assert result[0] == sample_plan
 
     @pytest.mark.asyncio
-    async def test_returns_empty_list(self, mock_session: AsyncMock) -> None:
+    async def test_returns_empty_list(self, mock_session: AsyncMock, mock_media_indexer_client: AsyncMock) -> None:
         """Test returning empty list when no plans exist."""
         mock_scalars = MagicMock()
         mock_scalars.all.return_value = []
@@ -406,7 +414,7 @@ class TestGetPlansByWorkflow:
         mock_result.scalars.return_value = mock_scalars
         mock_session.execute.return_value = mock_result
 
-        service = EditorialPlanService(mock_session)
+        service = EditorialPlanService(mock_session, mock_media_indexer_client)
         result = await service.get_plans_by_workflow(uuid4())
 
         assert result == []

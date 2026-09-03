@@ -76,7 +76,13 @@ def mock_editorial_provider() -> MagicMock:
         analysis_summary="This clip is suitable for direct use.",
     )
 
-    provider.analyze_candidate = AsyncMock(return_value=(llm_response, "{}"))
+    # Create a result object with response, raw_content, and resolved_model
+    result = MagicMock()
+    result.response = llm_response
+    result.raw_content = "{}"
+    result.resolved_model = "claude-3-5-sonnet"
+
+    provider.analyze_candidate_with_model = AsyncMock(return_value=result)
     return provider
 
 
@@ -175,11 +181,33 @@ class TestComputeRequestFingerprint:
         )
 
         candidate_id = uuid4()
+        source_id = uuid4()
+        transcription_id = uuid4()
         fingerprint1 = service._compute_request_fingerprint(
-            candidate_id, 45.0, 40.0, "abc123"
+            candidate_id=candidate_id,
+            source_id=source_id,
+            transcription_id=transcription_id,
+            context_before=45.0,
+            context_after=40.0,
+            strategy_id="editorial_suitability",
+            strategy_version="1.0.0",
+            prompt_id="editorial_suitability_v1",
+            prompt_version="1.0.0",
+            prompt_hash="abc123",
+            requested_combo="default",
         )
         fingerprint2 = service._compute_request_fingerprint(
-            candidate_id, 45.0, 40.0, "abc123"
+            candidate_id=candidate_id,
+            source_id=source_id,
+            transcription_id=transcription_id,
+            context_before=45.0,
+            context_after=40.0,
+            strategy_id="editorial_suitability",
+            strategy_version="1.0.0",
+            prompt_id="editorial_suitability_v1",
+            prompt_version="1.0.0",
+            prompt_hash="abc123",
+            requested_combo="default",
         )
 
         assert fingerprint1 == fingerprint2
@@ -197,11 +225,33 @@ class TestComputeRequestFingerprint:
         )
 
         candidate_id = uuid4()
+        source_id = uuid4()
+        transcription_id = uuid4()
         fingerprint1 = service._compute_request_fingerprint(
-            candidate_id, 45.0, 40.0, "abc123"
+            candidate_id=candidate_id,
+            source_id=source_id,
+            transcription_id=transcription_id,
+            context_before=45.0,
+            context_after=40.0,
+            strategy_id="editorial_suitability",
+            strategy_version="1.0.0",
+            prompt_id="editorial_suitability_v1",
+            prompt_version="1.0.0",
+            prompt_hash="abc123",
+            requested_combo="default",
         )
         fingerprint2 = service._compute_request_fingerprint(
-            candidate_id, 50.0, 40.0, "abc123"
+            candidate_id=candidate_id,
+            source_id=source_id,
+            transcription_id=transcription_id,
+            context_before=50.0,  # Different context_before
+            context_after=40.0,
+            strategy_id="editorial_suitability",
+            strategy_version="1.0.0",
+            prompt_id="editorial_suitability_v1",
+            prompt_version="1.0.0",
+            prompt_hash="abc123",
+            requested_combo="default",
         )
 
         assert fingerprint1 != fingerprint2
@@ -359,7 +409,7 @@ class TestExecuteAnalysis:
         result = await service.execute_analysis(sample_analysis.id)
 
         assert result.status == "completed"
-        mock_editorial_provider.analyze_candidate.assert_not_called()
+        mock_editorial_provider.analyze_candidate_with_model.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handles_processing_status(

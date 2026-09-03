@@ -6,20 +6,20 @@ from a ClipCandidate.
 """
 
 import hashlib
-import json
 import logging
-from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.clients.media_indexer_client import MediaIndexerClient
 from app.models.entities import (
     ClipCandidate,
     ClipWorkflow,
     EditorialSuitabilityAnalysis,
     ShortEditorialPlan,
 )
+from app.services.candidate_canonicalizer import CandidateCanonicalizer
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +71,11 @@ class EditorialPlanService:
     VALID_DECISION_SOURCES = {"model_recommendation", "human_override"}
     VALID_STATUSES = {"draft", "ready", "rejected", "invalidated"}
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, media_indexer_client: MediaIndexerClient
+    ) -> None:
         self.session = session
+        self.media_indexer_client = media_indexer_client
 
     def _compute_fingerprint(
         self,
@@ -84,6 +87,52 @@ class EditorialPlanService:
         """Compute SHA-256 fingerprint for plan idempotency."""
         data = f"{candidate_id}:{strategy}:{start_seconds}:{end_seconds}"
         return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+    async def _resolve_segment_ids_to_timestamps(
+        self,
+        transcription_id: UUID,
+        start_segment_id: UUID | None,
+        end_segment_id: UUID | None,
+    ) -> tuple[float | None, float | None]:
+        """
+        Resolve segment IDs to canonical timestamps via Media Indexer.
+
+        Args:
+            transcription_id: ID of the transcription
+            start_segment_id: Start segment ID to resolve
+            end_segment_id: End segment ID to resolve
+
+        Returns:
+            Tuple of (start_seconds, end_seconds) or (None, None) if no segment IDs
+        """
+        if not start_segment_id or not end_segment_id:
+            return None, None
+
+        # Fetch all segments for this transcription
+        all_segments = await self.media_indexer_client.get_all_transcript_segments(
+            transcription_id
+        )
+
+        # Create canonicalizer and resolve
+        canonicalizer = CandidateCanonicalizer(all_segments)
+        start_segment = canonicalizer.get_segment_by_id(start_segment_id)
+        end_segment = canonicalizer.get_segment_by_id(end_segment_id)
+
+        if not start_segment or not end_segment:
+            logger.warning(
+                f"Could not resolve segment IDs: start={start_segment_id}, end={end_segment_id}"
+            )
+            return None, None
+
+        # Validate segment order
+        if start_segment.start_seconds > end_segment.end_seconds:
+            logger.warning(
+                f"Invalid segment order: start ({start_segment.start_seconds}s) "
+                f"after end ({end_segment.end_seconds}s)"
+            )
+            return None, None
+
+        return start_segment.start_seconds, end_segment.end_seconds
 
     async def create_plan_from_analysis(
         self,
@@ -163,15 +212,39 @@ class EditorialPlanService:
                 f"Plan already exists for candidate {candidate.id}"
             )
 
-        # Compute fingerprint
+        # Resolve segment IDs to canonical timestamps for TRIM/ADD_CONTEXT
+        resolved_start = candidate.canonical_start_seconds
+        resolved_end = candidate.canonical_end_seconds
+
+        if (
+            analysis.recommended_strategy in ("TRIM", "ADD_CONTEXT")
+            and analysis.recommended_start_segment_id
+            and analysis.recommended_end_segment_id
+        ):
+            resolved_start, resolved_end = await self._resolve_segment_ids_to_timestamps(
+                transcription_id=analysis.transcription_id,
+                start_segment_id=analysis.recommended_start_segment_id,
+                end_segment_id=analysis.recommended_end_segment_id,
+            )
+            # Fallback to candidate boundaries if resolution fails
+            if resolved_start is None or resolved_end is None:
+                logger.warning(
+                    f"Could not resolve segment IDs for analysis {analysis_id}, "
+                    f"using candidate boundaries"
+                )
+                resolved_start = candidate.canonical_start_seconds
+                resolved_end = candidate.canonical_end_seconds
+
+        # Compute fingerprint with resolved boundaries
         fingerprint = self._compute_fingerprint(
             candidate_id=candidate.id,
             strategy=analysis.recommended_strategy,
-            start_seconds=candidate.canonical_start_seconds,
-            end_seconds=candidate.canonical_end_seconds,
+            start_seconds=resolved_start,
+            end_seconds=resolved_end,
         )
 
         # Create plan
+        duration = resolved_end - resolved_start
         plan = ShortEditorialPlan(
             workflow_id=workflow.id,
             source_id=workflow.source_id,
@@ -181,9 +254,9 @@ class EditorialPlanService:
             decision_source=decision_source,
             source_start_segment_id=analysis.recommended_start_segment_id,
             source_end_segment_id=analysis.recommended_end_segment_id,
-            source_start_seconds=candidate.canonical_start_seconds,
-            source_end_seconds=candidate.canonical_end_seconds,
-            duration_seconds=candidate.duration_seconds,
+            source_start_seconds=resolved_start,
+            source_end_seconds=resolved_end,
+            duration_seconds=duration,
             recommended_strategy=analysis.recommended_strategy,
             recommended_start_segment_id=analysis.recommended_start_segment_id,
             recommended_end_segment_id=analysis.recommended_end_segment_id,
