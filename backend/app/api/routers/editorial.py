@@ -797,10 +797,10 @@ async def submit_render_job(
         CompositionNotFoundError,
         CompositionNotReadyError,
         RenderingError,
-        RenderingService,
+        get_rendering_service,
     )
 
-    service = RenderingService(session)
+    service = get_rendering_service(session)
 
     try:
         composition = await service.submit_render_job(
@@ -852,10 +852,10 @@ async def poll_render_status(
         CompositionNotFoundError,
         RenderJobFailedError,
         RenderingError,
-        RenderingService,
+        get_rendering_service,
     )
 
-    service = RenderingService(session)
+    service = get_rendering_service(session)
 
     try:
         composition = await service.poll_render_status(composition_id)
@@ -899,10 +899,10 @@ async def get_output_media(
     """
     from app.services.rendering_service import (
         CompositionNotFoundError,
-        RenderingService,
+        get_rendering_service,
     )
 
-    service = RenderingService(session)
+    service = get_rendering_service(session)
 
     try:
         media = await service.get_output_media(composition_id)

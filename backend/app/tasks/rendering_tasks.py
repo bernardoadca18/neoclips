@@ -45,11 +45,11 @@ async def _submit_render_job_async(
         CompositionNotFoundError,
         CompositionNotReadyError,
         RenderingError,
-        RenderingService,
+        get_rendering_service,
     )
 
     async with async_session_factory() as session:
-        service = RenderingService(session)
+        service = get_rendering_service(session)
 
         try:
             composition = await service.submit_render_job(
