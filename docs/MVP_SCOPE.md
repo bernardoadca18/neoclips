@@ -72,16 +72,20 @@ These may be considered in future stages.
 
 ## Current Stage
 
-**Stage 0 — Architecture Freeze**: Documentation and domain model definition.
+**Stage 0 — Architecture Freeze**: Complete
 
-**Stage 1 — Foundation**: Core infrastructure, entities, and basic API.
+**Stage 1 — Foundation**: Complete
+
+**Stage 2 — Media Indexer Integration**: Complete
+
+**Stage 3 — Transcript Clip Discovery**: Complete
+
+**Stage 4 — Editorial Suite**: Complete
+
+**Stage 5 — Clip Composition**: Complete
 
 ## Future Stages (Not Yet Implemented)
 
-- Stage 2: Media Indexer Integration
-- Stage 3: Transcript Clip Discovery
-- Stage 4: Multimodal Observation Engine
-- Stage 5: Candidate Ranking
 - Stage 6: Video Composer Integration
 - Stage 7: Packaging
 - Stage 8: QA

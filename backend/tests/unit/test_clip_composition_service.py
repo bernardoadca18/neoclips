@@ -80,7 +80,7 @@ class TestFingerprintComputation:
         plan_id = uuid4()
         media_id = uuid4()
         transcription_id = uuid4()
-        source_sha256 = "abc123def456"
+        source_sha256 = "a" * 64  # Valid 64-char lowercase hex
         start = 10.0
         end = 30.0
         strategy = "TRIM"
@@ -112,7 +112,7 @@ class TestFingerprintComputation:
         plan_id = uuid4()
         media_id = uuid4()
         transcription_id = uuid4()
-        source_sha256 = "abc123def456"
+        source_sha256 = "a" * 64  # Valid 64-char lowercase hex
         start = 10.0
         end = 30.0
         strategy = "TRIM"
@@ -141,7 +141,7 @@ class TestFingerprintComputation:
         plan_id = uuid4()
         media_id = uuid4()
         transcription_id = uuid4()
-        source_sha256 = "abc123def456"
+        source_sha256 = "a" * 64  # Valid 64-char lowercase hex
         start = 10.0
         end = 30.0
         strategy = "TRIM"
@@ -171,7 +171,7 @@ class TestFingerprintComputation:
         plan_id = uuid4()
         media_id = uuid4()
         transcription_id = uuid4()
-        source_sha256 = "abc123def456"
+        source_sha256 = "a" * 64  # Valid 64-char lowercase hex
         start = 10.0
         end = 30.0
         strategy = "TRIM"
@@ -211,7 +211,7 @@ class TestFingerprintComputation:
 
         fp_sha1 = service._compute_fingerprint(
             workflow_id, source_id, candidate_id, analysis_id, plan_id,
-            media_id, transcription_id, "sha256_abc123", start, end,
+            media_id, transcription_id, "b" * 64, start, end,  # Different SHA-256
             strategy, render_profile, audio_mode, caption_mode, contract_version
         )
         fp_sha2 = service._compute_fingerprint(
@@ -232,7 +232,7 @@ class TestFingerprintComputation:
         plan_id = uuid4()
         media_id = uuid4()
         transcription_id = uuid4()
-        source_sha256 = "abc123def456"
+        source_sha256 = "a" * 64  # Valid 64-char lowercase hex
         start = 10.0
         end = 30.0
         strategy = "TRIM"
@@ -378,7 +378,7 @@ class TestCreateCompositionFromPlan:
         source.id = source_id
         source.media_id = media_id
         source.transcription_id = transcription_id
-        source.source_sha256 = "abc123def456"
+        source.source_sha256 = "a" * 64  # Valid 64-char lowercase hex
 
         # Mock workflow for lineage validation
         workflow = MagicMock(spec=ClipWorkflow)
@@ -395,6 +395,7 @@ class TestCreateCompositionFromPlan:
         run.id = candidate.run_id
         run.workflow_id = workflow_id
         run.source_id = source_id
+        run.transcription_id = transcription_id  # Must match source.transcription_id
 
         existing_composition = MagicMock(spec=ClipComposition)
         existing_composition.id = uuid4()
@@ -613,7 +614,7 @@ class TestLineageValidation:
         source.id = source_id
         source.media_id = uuid4()
         source.transcription_id = uuid4()
-        source.source_sha256 = "abc123"
+        source.source_sha256 = "a" * 64  # Valid SHA-256 format
 
         analysis = MagicMock(spec=EditorialSuitabilityAnalysis)
         analysis.candidate_id = analysis_candidate_id  # Mismatch!

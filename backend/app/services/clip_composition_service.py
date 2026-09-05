@@ -299,6 +299,14 @@ class ClipCompositionService:
                 "source must be fully ingested before composition"
             )
 
+        # RESÍDUO 4: Validate source_sha256 format (64-char lowercase hex)
+        import re
+        if not re.match(r'^[a-f0-9]{64}$', source_sha256):
+            raise LineageMismatchError(
+                f"ClipSource {source.id} has invalid source_sha256 format - "
+                f"expected 64 lowercase hex characters, got '{source_sha256}'"
+            )
+
         # Step 3: Resolve candidate_id from analysis or plan
         candidate_id: UUID | None = None
 
@@ -319,6 +327,23 @@ class ClipCompositionService:
                         f"Plan candidate_id {plan.candidate_id} does not match "
                         f"analysis candidate_id {analysis.candidate_id}"
                     )
+
+                # RESÍDUO 2: Validate analysis.transcription_id == source.transcription_id
+                if analysis.transcription_id is None:
+                    raise IncompleteLineageError(
+                        f"EditorialSuitabilityAnalysis {analysis.id} has no transcription_id"
+                    )
+                if analysis.transcription_id != transcription_id:
+                    raise LineageMismatchError(
+                        f"EditorialSuitabilityAnalysis transcription_id {analysis.transcription_id} "
+                        f"does not match ClipSource transcription_id {transcription_id}"
+                    )
+            else:
+                # RESÍDUO 3: If analysis_id is set but analysis not found, fail explicitly
+                raise IncompleteLineageError(
+                    f"ShortEditorialPlan {plan_id} references analysis_id {plan.analysis_id} "
+                    "which does not exist"
+                )
 
         # If plan has candidate_id directly, use it
         if plan.candidate_id:
@@ -384,6 +409,18 @@ class ClipCompositionService:
             raise LineageMismatchError(
                 f"DiscoveryRun source_id {run.source_id} does not match "
                 f"plan source_id {plan.source_id}"
+            )
+
+        # RESÍDUO 1: Validate run.transcription_id == source.transcription_id
+        if run.transcription_id is None:
+            raise IncompleteLineageError(
+                f"DiscoveryRun {run.id} has no transcription_id - "
+                "discovery must complete transcription before composition"
+            )
+        if run.transcription_id != transcription_id:
+            raise LineageMismatchError(
+                f"DiscoveryRun transcription_id {run.transcription_id} does not match "
+                f"ClipSource transcription_id {transcription_id}"
             )
 
         # Cross-validate: analysis lineage if present
@@ -511,21 +548,6 @@ class ClipCompositionService:
 
         logger.info(f"Composition {composition_id} status updated to {status}")
         return composition  # type: ignore[no-any-return]
-
-    async def get_composition_by_plan(
-        self, plan_id: UUID
-    ) -> ClipComposition | None:
-        """Get the composition for a plan.
-
-        WARNING: This method returns a single composition. If multiple variants
-        exist (different render_profile/audio_mode/caption_mode), this will
-        raise MultipleResultsFound. Use get_compositions_by_plan for robust
-        handling of variants.
-        """
-        result = await self.session.execute(
-            select(ClipComposition).where(ClipComposition.plan_id == plan_id)
-        )
-        return result.scalar_one_or_none()
 
     async def get_compositions_by_plan(
         self, plan_id: UUID

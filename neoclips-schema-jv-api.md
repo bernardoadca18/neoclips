@@ -13,7 +13,7 @@
 - **Domain**: Audiovisual content transformation
 - **Description**: Transforms long-form audiovisual content into clip candidates and rendered clips through LLM-powered discovery
 - **Repository**: `/home/bernardo/workspaces/neoclips`
-- **Version**: Stage 3 Complete (Transcript Clip Discovery)
+- **Version**: Stage 5 Complete (Clip Composition)
 
 ---
 
@@ -72,7 +72,22 @@ NeoClips exposes a REST API for managing video sources, workflows, and clip disc
 | `neoclips_candidate_get` | GET | `/v1/discovery/candidates/{id}` | Get candidate details | Safe |
 | `neoclips_candidate_update` | PATCH | `/v1/discovery/candidates/{id}` | Update candidate | Safe |
 
-### 3.4 Policy Management
+### 3.4 Editorial Operations
+
+| Jarvis Tool Name | HTTP Method | Endpoint | Description | Safety |
+|-----------------|-------------|----------|-------------|--------|
+| `neoclips_editorial_analysis_create` | POST | `/v1/editorial/analyses` | Create editorial analysis | Safe |
+| `neoclips_editorial_analysis_get` | GET | `/v1/editorial/analyses/{id}` | Get analysis by ID | Safe |
+| `neoclips_editorial_analysis_list` | GET | `/v1/editorial/analyses` | List analyses | Safe |
+| `neoclips_editorial_plan_create` | POST | `/v1/editorial/plans` | Create editorial plan | Safe |
+| `neoclips_editorial_plan_get` | GET | `/v1/editorial/plans/{id}` | Get plan by ID | Safe |
+| `neoclips_editorial_plan_list` | GET | `/v1/editorial/plans` | List plans | Safe |
+| `neoclips_composition_create` | POST | `/v1/editorial/compositions` | Create clip composition | Safe |
+| `neoclips_composition_get` | GET | `/v1/editorial/compositions/{id}` | Get composition by ID | Safe |
+| `neoclips_composition_by_plan` | GET | `/v1/editorial/plans/{id}/composition` | Get composition by plan (409 if multiple) | Safe |
+| `neoclips_compositions_by_plan` | GET | `/v1/editorial/plans/{id}/compositions` | List compositions by plan | Safe |
+
+### 3.5 Policy Management
 
 | Jarvis Tool Name | HTTP Method | Endpoint | Description | Safety |
 |-----------------|-------------|----------|-------------|--------|
@@ -82,7 +97,7 @@ NeoClips exposes a REST API for managing video sources, workflows, and clip disc
 | `neoclips_policy_update` | PATCH | `/v1/policies/{id}` | Update policy | Safe |
 | `neoclips_policy_delete` | DELETE | `/v1/policies/{id}` | Delete policy | Destructive |
 
-### 3.5 Health & Diagnostics
+### 3.6 Health & Diagnostics
 
 | Jarvis Tool Name | HTTP Method | Endpoint | Description | Safety |
 |-----------------|-------------|----------|-------------|--------|
@@ -871,13 +886,15 @@ If IoU >= 0.5:
 
 Per `AGENTS.md`, the following are NOT implemented:
 
-- **Stage 4**: Multimodal Observation Engine
-- **Stage 5**: Candidate Ranking
 - **Stage 6**: Video Composer Integration
 - **Stage 7**: Packaging
 - **Stage 8**: QA
 
-**Jarvis Integration**: Do not implement tools for these stages without explicit instruction.
+**Completed Stages**:
+- Stage 4: Editorial Suite (EditorialSuitabilityAnalysis, ShortEditorialPlan)
+- Stage 5: Clip Composition (ClipComposition with lineage validation)
+
+**Jarvis Integration**: Do not implement tools for Stage 6-8 without explicit instruction.
 
 ---
 
@@ -891,6 +908,10 @@ Per `AGENTS.md`, the following are NOT implemented:
 6. **LLM as semantic judge** - Returns segment IDs, canonicalizer resolves timestamps
 7. **Deterministic scoring** - Reproducible scores from documented weights
 8. **Temporal IoU for deduplication** - 0.5 threshold for duplicate detection
+9. **Full lineage validation** - ClipComposition validates complete chain from source to plan
+10. **Composition variants** - Multiple compositions per plan with different render profiles
+11. **Transcription consistency** - run.transcription_id must equal source.transcription_id
+12. **SHA-256 validation** - source_sha256 must be 64-char lowercase hex
 
 ---
 
@@ -966,7 +987,24 @@ neoclips/
 
 ## 30. Changelog
 
-### Stage 3 (Current)
+### Stage 5 (Current)
+
+- Implemented ClipComposition entity with lineage validation
+- Full lineage chain: ClipSource → ClipWorkflow → DiscoveryRun → ClipCandidate → EditorialSuitabilityAnalysis → ShortEditorialPlan → ClipComposition
+- Composition variants support (multiple compositions per plan)
+- Fingerprint-based idempotency with 15+ parameters
+- Editorial API endpoints (/v1/editorial/)
+- NineRouterEditorialProvider for LLM-based analysis
+
+### Stage 4
+
+- Implemented EditorialSuitabilityAnalysis entity
+- Implemented ShortEditorialPlan entity
+- Editorial suitability analysis via 9Router
+- Short editorial plan management
+- Strategy-aware canonicalization (TRIM, ADD_CONTEXT)
+
+### Stage 3
 
 - Implemented discovery API endpoints
 - Added 9Router discovery provider

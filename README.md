@@ -68,6 +68,27 @@ celery -A app.core.celery_app.celery_app worker -Q neoclips --concurrency=1 -l i
 - `POST /{id}/cancel` - Cancel workflow
 - `POST /{id}/retry` - Retry failed workflow
 
+### Discovery (`/v1/discovery`)
+- `POST /workflows/{id}/discover` - Start clip discovery
+- `GET /runs` - List discovery runs
+- `GET /runs/{id}` - Get discovery run
+- `GET /runs/{id}/windows` - List discovery windows
+- `GET /runs/{id}/candidates` - List clip candidates
+- `GET /candidates/{id}` - Get candidate details
+- `PATCH /candidates/{id}` - Update candidate
+
+### Editorial (`/v1/editorial`)
+- `POST /analyses` - Create editorial suitability analysis
+- `GET /analyses` - List analyses
+- `GET /analyses/{id}` - Get analysis
+- `POST /plans` - Create editorial plan
+- `GET /plans` - List plans
+- `GET /plans/{id}` - Get plan
+- `POST /compositions` - Create clip composition
+- `GET /compositions/{id}` - Get composition
+- `GET /plans/{id}/composition` - Get composition by plan (409 if multiple variants)
+- `GET /plans/{id}/compositions` - List all compositions for a plan
+
 ## Development
 
 ```bash

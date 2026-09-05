@@ -4,6 +4,7 @@ Tests the strategy-aware canonicalization for TRIM and ADD_CONTEXT strategies,
 including invariant validation.
 """
 
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -21,7 +22,6 @@ class TestResolveSegmentIdsToTimestamps:
     def mock_media_indexer_client(self):
         """Create a mock media indexer client."""
         from unittest.mock import AsyncMock
-
 
         client = AsyncMock()
         return client

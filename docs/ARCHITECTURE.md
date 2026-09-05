@@ -122,8 +122,11 @@ Therefore:
 
 Interfaces prepared but not implemented:
 
-- `MediaIndexerClient` — HTTP client for Media Indexer API
-- `VideoComposerClient` — HTTP client for Video Composer API
-- `AIProvider` — Abstraction for LLM providers
+- `VideoComposerClient` — HTTP client for Video Composer API (Stage 6)
 
 These will be implemented in future stages.
+
+## Implemented Integrations
+
+- `MediaIndexerClient` — HTTP client for Media Indexer API (Stage 2)
+- `NineRouterEditorialProvider` — LLM gateway via 9Router for editorial analysis (Stage 4)
