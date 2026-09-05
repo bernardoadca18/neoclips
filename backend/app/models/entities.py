@@ -523,6 +523,9 @@ class EditorialSuitabilityAnalysis(Base, UUIDPrimaryKey, TimestampMixin):
     editorial_plans: Mapped[list["ShortEditorialPlan"]] = relationship(
         "ShortEditorialPlan", back_populates="analysis", cascade="all, delete-orphan"
     )
+    compositions: Mapped[list["ClipComposition"]] = relationship(
+        "ClipComposition", back_populates="analysis"
+    )
 
     __table_args__ = (
         CheckConstraint(

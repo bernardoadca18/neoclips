@@ -61,6 +61,8 @@ def mock_editorial_provider() -> MagicMock:
     provider = MagicMock(spec=NineRouterEditorialProvider)
     provider.combo = "neoclips-editorial"
     provider._get_prompt_hash = MagicMock(return_value="abc123")
+    provider.temperature = 0.3
+    provider.max_tokens = 1500
 
     llm_response = LLMEditorialAnalysisResponse(
         standalone_score=85,

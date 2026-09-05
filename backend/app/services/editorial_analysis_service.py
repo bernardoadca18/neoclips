@@ -189,7 +189,7 @@ class EditorialAnalysisService:
 
         if existing:
             logger.info(f"Found existing analysis {existing.id} for candidate {candidate_id}")
-            return existing
+            return existing  # type: ignore[no-any-return]
 
         # Create new analysis record (context already fetched for fingerprint)
         analysis = EditorialSuitabilityAnalysis(
@@ -258,11 +258,11 @@ class EditorialAnalysisService:
 
         if analysis.status == "completed":
             logger.info(f"Analysis {analysis_id} already completed")
-            return analysis
+            return analysis  # type: ignore[no-any-return]
 
         if analysis.status == "processing":
             logger.warning(f"Analysis {analysis_id} is already being processed")
-            return analysis
+            return analysis  # type: ignore[no-any-return]
 
         # Update status to processing
         analysis.status = "processing"
@@ -316,7 +316,7 @@ class EditorialAnalysisService:
             await self.session.refresh(analysis)
 
             logger.info(f"Analysis {analysis_id} completed successfully")
-            return analysis
+            return analysis  # type: ignore[no-any-return]
 
         except NineRouterEditorialError as e:
             logger.error(f"Analysis {analysis_id} failed: {e}")

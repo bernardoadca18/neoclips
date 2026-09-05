@@ -12,6 +12,7 @@ editorial strategies.
 
 import json
 import logging
+import typing
 from dataclasses import dataclass
 
 import httpx
@@ -71,9 +72,9 @@ class CandidateContext:
     """Context for editorial analysis containing candidate and surrounding segments."""
 
     candidate_id: str
-    candidate_segments: list[dict]  # List of segment dicts with id, start, end, text
-    context_before_segments: list[dict]  # Segments before the candidate
-    context_after_segments: list[dict]  # Segments after the candidate
+    candidate_segments: list[dict[str, typing.Any]]  # List of segment dicts with id, start, end, text
+    context_before_segments: list[dict[str, typing.Any]]  # Segments before the candidate
+    context_after_segments: list[dict[str, typing.Any]]  # Segments after the candidate
 
 
 class NineRouterEditorialProvider:
@@ -135,12 +136,13 @@ class NineRouterEditorialProvider:
 
         Returns hash of custom prompt if provided, otherwise the canonical hash.
         This ensures prompt_hash reflects the actual prompt sent to the LLM.
+        Always returns full 64-character SHA-256 hexadecimal string.
         """
         import hashlib
 
-        # If custom prompt provided, hash it
+        # If custom prompt provided, hash it (full 64-char SHA-256)
         if self._system_prompt:
-            return hashlib.sha256(self._system_prompt.encode()).hexdigest()[:16]
+            return hashlib.sha256(self._system_prompt.encode("utf-8")).hexdigest()
 
         # Otherwise use the canonical prompt hash
         hash_value = get_editorial_prompt_hash(self.prompt_id, self.prompt_version)

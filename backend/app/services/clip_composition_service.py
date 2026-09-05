@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entities import (
     ClipComposition,
+    ClipSource,
     ShortEditorialPlan,
 )
 
@@ -53,6 +54,18 @@ class UnsupportedStrategyError(CompositionError):
     pass
 
 
+class IncompleteLineageError(CompositionError):
+    """Raised when required lineage is missing."""
+
+    pass
+
+
+class LineageMismatchError(CompositionError):
+    """Raised when lineage cross-entity validation fails."""
+
+    pass
+
+
 class ClipCompositionService:
     """
     Service for managing Clip Compositions.
@@ -60,10 +73,17 @@ class ClipCompositionService:
     Handles:
     - Composition creation from editorial plans
     - Strategy validation (USE_DIRECTLY, TRIM, ADD_CONTEXT only)
-    - Fingerprint for idempotency
+    - Full lineage resolution and validation
+    - Fingerprint for idempotency (computed AFTER lineage resolution)
     - Status transitions
+
+    Invariants:
+    - A 'ready' composition MUST have complete lineage
+    - Fingerprint includes all material fields including provenance
+    - Lineage is validated for cross-entity consistency
     """
 
+    COMPOSITION_CONTRACT_VERSION = "clip_composition_v2"
     RENDER_PROFILE_VERSION = "vertical_short_v1"
 
     SUPPORTED_STRATEGIES = {"USE_DIRECTLY", "TRIM", "ADD_CONTEXT"}
@@ -77,29 +97,46 @@ class ClipCompositionService:
 
     def _compute_fingerprint(
         self,
+        workflow_id: UUID,
+        source_id: UUID,
+        candidate_id: UUID,
+        analysis_id: UUID | None,
         plan_id: UUID,
-        strategy: str,
+        media_id: UUID,
+        transcription_id: UUID,
+        source_sha256: str,
         source_start_seconds: float,
         source_end_seconds: float,
+        strategy: str,
         render_profile: str,
         audio_mode: str,
         caption_mode: str,
+        composition_contract_version: str,
     ) -> str:
         """Compute SHA-256 fingerprint for composition idempotency.
 
-        The fingerprint includes all parameters that affect the rendered output:
-        - plan_id: the editorial plan being materialized
-        - strategy: how to process the source
-        - boundaries: source start/end times
-        - render_profile: versioned rendering configuration
-        - audio_mode: audio handling mode
-        - caption_mode: caption handling mode
+        The fingerprint includes ALL parameters that affect the composition identity:
+        - Lineage: workflow, source, candidate, analysis, plan, media, transcription, sha256
+        - Boundaries: source start/end times
+        - Editorial: strategy
+        - Render config: profile, audio_mode, caption_mode
+        - Contract version: for schema evolution
+
+        This MUST be called AFTER lineage is fully resolved and validated.
         """
         data = json.dumps({
+            "composition_contract_version": composition_contract_version,
+            "workflow_id": str(workflow_id),
+            "source_id": str(source_id),
+            "candidate_id": str(candidate_id),
+            "analysis_id": str(analysis_id) if analysis_id else None,
             "plan_id": str(plan_id),
-            "strategy": strategy,
+            "media_id": str(media_id),
+            "transcription_id": str(transcription_id),
+            "source_sha256": source_sha256,
             "source_start_seconds": source_start_seconds,
             "source_end_seconds": source_end_seconds,
+            "strategy": strategy,
             "render_profile": render_profile,
             "audio_mode": audio_mode,
             "caption_mode": caption_mode,
@@ -161,6 +198,14 @@ class ClipCompositionService:
         """
         Create a clip composition from an editorial plan.
 
+        This method resolves full lineage BEFORE creating the composition:
+        1. Load plan and validate status/strategy
+        2. Load ClipSource to get media_id, transcription_id, source_sha256
+        3. Validate cross-entity lineage consistency
+        4. Compute fingerprint AFTER lineage resolution
+        5. Check idempotency by fingerprint
+        6. Create composition with complete lineage
+
         Args:
             plan_id: UUID of the editorial plan
             render_profile: Render profile to use (default: vertical_short_v1)
@@ -173,10 +218,11 @@ class ClipCompositionService:
         Raises:
             PlanNotFoundError: If plan doesn't exist
             PlanNotReadyError: If plan status is not "ready"
-            CompositionAlreadyExistsError: If composition already exists for plan
             UnsupportedStrategyError: If strategy is REAUTHOR or REJECT
+            IncompleteLineageError: If required lineage is missing
+            LineageMismatchError: If cross-entity validation fails
         """
-        # Get plan
+        # Step 1: Load and validate plan
         result = await self.session.execute(
             select(ShortEditorialPlan).where(ShortEditorialPlan.id == plan_id)
         )
@@ -209,34 +255,48 @@ class ClipCompositionService:
                 f"Supported strategies: {self.SUPPORTED_STRATEGIES}"
             )
 
-        # Compute fingerprint
-        fingerprint = self._compute_fingerprint(
-            plan_id=plan.id,
-            strategy=plan.strategy,
-            source_start_seconds=plan.source_start_seconds,
-            source_end_seconds=plan.source_end_seconds,
-            render_profile=render_profile,
-            audio_mode=audio_mode,
-            caption_mode=caption_mode,
-        )
-
-        # Check for existing composition by fingerprint (idempotency)
-        existing_result = await self.session.execute(
-            select(ClipComposition).where(ClipComposition.fingerprint == fingerprint)
-        )
-        existing = existing_result.scalar_one_or_none()
-
-        if existing:
-            logger.info(
-                f"Composition already exists with fingerprint {fingerprint[:16]}..., returning existing"
+        # Step 2: Resolve lineage from ClipSource
+        if not plan.source_id:
+            raise IncompleteLineageError(
+                f"Plan {plan_id} has no source_id - cannot resolve lineage"
             )
-            return existing
 
-        # Get lineage info from analysis
-        candidate_id = None
-        media_id = None
-        transcription_id = None
-        source_sha256 = None
+        source_result = await self.session.execute(
+            select(ClipSource).where(ClipSource.id == plan.source_id)
+        )
+        source = source_result.scalar_one_or_none()
+
+        if not source:
+            raise IncompleteLineageError(
+                f"ClipSource {plan.source_id} not found for plan {plan_id}"
+            )
+
+        # Extract lineage fields from ClipSource
+        media_id = source.media_id
+        transcription_id = source.transcription_id
+        source_sha256 = source.source_sha256
+
+        # Validate required lineage fields are present
+        if media_id is None:
+            raise IncompleteLineageError(
+                f"ClipSource {source.id} has no media_id - "
+                "source must be fully ingested before composition"
+            )
+
+        if transcription_id is None:
+            raise IncompleteLineageError(
+                f"ClipSource {source.id} has no transcription_id - "
+                "transcription must be complete before composition"
+            )
+
+        if source_sha256 is None:
+            raise IncompleteLineageError(
+                f"ClipSource {source.id} has no source_sha256 - "
+                "source must be fully ingested before composition"
+            )
+
+        # Step 3: Resolve candidate_id from analysis or plan
+        candidate_id: UUID | None = None
 
         if plan.analysis_id:
             from app.models.entities import EditorialSuitabilityAnalysis
@@ -247,20 +307,69 @@ class ClipCompositionService:
                 )
             )
             analysis = analysis_result.scalar_one_or_none()
+
             if analysis:
                 candidate_id = analysis.candidate_id
 
-        # Create composition with full lineage
+                # Cross-entity validation: analysis.candidate_id should match plan's expected
+                if plan.candidate_id and analysis.candidate_id != plan.candidate_id:
+                    raise LineageMismatchError(
+                        f"Plan candidate_id {plan.candidate_id} does not match "
+                        f"analysis candidate_id {analysis.candidate_id}"
+                    )
+
+        # If plan has candidate_id directly, use it
+        if plan.candidate_id:
+            candidate_id = plan.candidate_id
+
+        if candidate_id is None:
+            raise IncompleteLineageError(
+                f"Cannot resolve candidate_id for plan {plan_id} - "
+                "plan has no candidate_id and analysis is missing or has no candidate_id"
+            )
+
+        # Step 4: Compute fingerprint AFTER lineage resolution
+        fingerprint = self._compute_fingerprint(
+            workflow_id=plan.workflow_id,
+            source_id=plan.source_id,
+            candidate_id=candidate_id,
+            analysis_id=plan.analysis_id,
+            plan_id=plan.id,
+            media_id=media_id,
+            transcription_id=transcription_id,
+            source_sha256=source_sha256,
+            source_start_seconds=plan.source_start_seconds,
+            source_end_seconds=plan.source_end_seconds,
+            strategy=plan.strategy,
+            render_profile=render_profile,
+            audio_mode=audio_mode,
+            caption_mode=caption_mode,
+            composition_contract_version=self.COMPOSITION_CONTRACT_VERSION,
+        )
+
+        # Step 5: Check for existing composition by fingerprint (idempotency)
+        existing_result = await self.session.execute(
+            select(ClipComposition).where(ClipComposition.fingerprint == fingerprint)
+        )
+        existing = existing_result.scalar_one_or_none()
+
+        if existing:
+            logger.info(
+                f"Composition already exists with fingerprint {fingerprint[:16]}..., returning existing"
+            )
+            return existing  # type: ignore[no-any-return]
+
+        # Step 6: Create composition with complete lineage
         composition = ClipComposition(
             workflow_id=plan.workflow_id,
             source_id=plan.source_id,
             plan_id=plan.id,
             analysis_id=plan.analysis_id,
-            # Extended lineage fields
+            # Complete lineage - no None values for ready composition
             candidate_id=candidate_id,
-            media_id=media_id,  # Will be populated when rendering
-            transcription_id=transcription_id,  # Will be populated when rendering
-            source_sha256=source_sha256,  # Will be populated when rendering
+            media_id=media_id,
+            transcription_id=transcription_id,
+            source_sha256=source_sha256,
             # Timing fields
             source_start_seconds=plan.source_start_seconds,
             source_end_seconds=plan.source_end_seconds,
@@ -272,7 +381,7 @@ class ClipCompositionService:
             composition_version=2,
             audio_mode=audio_mode,
             caption_mode=caption_mode,
-            status="ready",  # Composition is ready for rendering once created
+            status="ready",
             fingerprint=fingerprint,
         )
 
@@ -328,7 +437,7 @@ class ClipCompositionService:
         await self.session.refresh(composition)
 
         logger.info(f"Composition {composition_id} status updated to {status}")
-        return composition
+        return composition  # type: ignore[no-any-return]
 
     async def get_composition_by_plan(
         self, plan_id: UUID
