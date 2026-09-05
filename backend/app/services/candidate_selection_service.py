@@ -9,7 +9,7 @@ Handles manual select/unselect operations with validation rules:
 import logging
 from uuid import UUID
 
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entities import ClipCandidate, DiscoveryRun

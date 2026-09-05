@@ -343,8 +343,10 @@ class EditorialPlanService:
 
         # Transition workflow to 'planning' state if this is the first plan
         if workflow.status == "awaiting_selection":
-            workflow.status = "planning"
-            await self.session.commit()
+            from app.services.clip_workflow_service import ClipWorkflowService
+
+            workflow_service = ClipWorkflowService(self.session)
+            await workflow_service.transition_status(workflow.id, "planning")
             logger.info(f"Transitioned workflow {workflow.id} to 'planning' state")
 
         logger.info(f"Created plan {plan.id} from analysis {analysis_id}")

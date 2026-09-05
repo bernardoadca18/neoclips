@@ -49,6 +49,12 @@ class ClipCompositionRead(BaseModel):
     source_id: UUID | None
     plan_id: UUID
     analysis_id: UUID | None
+    # Extended lineage fields
+    candidate_id: UUID | None
+    media_id: UUID | None
+    transcription_id: UUID | None
+    source_sha256: str | None
+    # Timing fields
     source_start_seconds: float
     source_end_seconds: float
     duration_seconds: float

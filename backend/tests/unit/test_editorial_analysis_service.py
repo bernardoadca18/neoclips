@@ -195,6 +195,8 @@ class TestComputeRequestFingerprint:
             prompt_version="1.0.0",
             prompt_hash="abc123",
             requested_combo="default",
+            temperature=0.3,
+            max_tokens=1500,
         )
         fingerprint2 = service._compute_request_fingerprint(
             candidate_id=candidate_id,
@@ -208,6 +210,8 @@ class TestComputeRequestFingerprint:
             prompt_version="1.0.0",
             prompt_hash="abc123",
             requested_combo="default",
+            temperature=0.3,
+            max_tokens=1500,
         )
 
         assert fingerprint1 == fingerprint2
@@ -239,6 +243,8 @@ class TestComputeRequestFingerprint:
             prompt_version="1.0.0",
             prompt_hash="abc123",
             requested_combo="default",
+            temperature=0.3,
+            max_tokens=1500,
         )
         fingerprint2 = service._compute_request_fingerprint(
             candidate_id=candidate_id,
@@ -252,6 +258,8 @@ class TestComputeRequestFingerprint:
             prompt_version="1.0.0",
             prompt_hash="abc123",
             requested_combo="default",
+            temperature=0.3,
+            max_tokens=1500,
         )
 
         assert fingerprint1 != fingerprint2

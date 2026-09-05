@@ -16,6 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.media_indexer_client import MediaIndexerClient, get_media_indexer_client
 from app.core.database import get_session
+from app.schemas.clip_composition import (
+    ClipCompositionCreate,
+    ClipCompositionRead,
+    ClipCompositionUpdate,
+)
 from app.schemas.editorial import (
     CandidateSelectionRequest,
     CandidateSelectionResponse,
@@ -45,6 +50,15 @@ from app.services.candidate_shortlist_service import (
 from app.services.candidate_shortlist_service import (
     RunNotTerminalError as ShortlistRunNotTerminalError,
 )
+from app.services.clip_composition_service import (
+    ClipCompositionService,
+    CompositionError,
+    PlanNotReadyError,
+    UnsupportedStrategyError,
+)
+from app.services.clip_composition_service import (
+    PlanNotFoundError as CompositionPlanNotFoundError,
+)
 from app.services.editorial_analysis_service import (
     CandidateNotReadyError,
     EditorialAnalysisError,
@@ -59,20 +73,6 @@ from app.services.editorial_plan_service import (
 )
 from app.services.editorial_plan_service import (
     CandidateNotFoundError as PlanCandidateNotFoundError,
-)
-from app.services.editorial_plan_service import CanonicalizationError
-from app.services.clip_composition_service import (
-    ClipCompositionService,
-    CompositionAlreadyExistsError,
-    CompositionError,
-    PlanNotFoundError as CompositionPlanNotFoundError,
-    PlanNotReadyError,
-    UnsupportedStrategyError,
-)
-from app.schemas.clip_composition import (
-    ClipCompositionCreate,
-    ClipCompositionRead,
-    ClipCompositionUpdate,
 )
 
 logger = logging.getLogger(__name__)
@@ -635,11 +635,6 @@ async def create_clip_composition(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
-    except CompositionAlreadyExistsError as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
-        )
     except UnsupportedStrategyError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -765,158 +760,3 @@ async def get_composition_by_id(
         )
 
     return composition
-
-
-# ============================================================================
-# Rendering Endpoints (Stage 6)
-# ============================================================================
-
-
-@router.post(
-    "/compositions/{composition_id}/render",
-    response_model=ClipCompositionRead,
-    summary="Submit a render job for a composition",
-    status_code=status.HTTP_202_ACCEPTED,
-)
-async def submit_render_job(
-    composition_id: UUID,
-    source_media_id: UUID = Query(..., description="UUID of the source media to render from"),
-    session: AsyncSession = Depends(get_session),
-) -> Any:
-    """
-    Submit a render job to Video Composer for a composition.
-
-    The composition must be in 'ready' status. This endpoint submits
-    the render job and returns the composition with status 'rendering'.
-
-    Raises:
-        404: Composition not found
-        400: Composition not ready for rendering
-    """
-    from app.services.rendering_service import (
-        CompositionNotFoundError,
-        CompositionNotReadyError,
-        RenderingError,
-        get_rendering_service,
-    )
-
-    service = get_rendering_service(session)
-
-    try:
-        composition = await service.submit_render_job(
-            composition_id=composition_id,
-            source_media_id=source_media_id,
-        )
-        return composition
-
-    except CompositionNotFoundError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
-        )
-
-    except CompositionNotReadyError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
-    except RenderingError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to submit render job: {e}",
-        )
-
-
-@router.post(
-    "/compositions/{composition_id}/poll-render",
-    response_model=ClipCompositionRead,
-    summary="Poll render job status",
-)
-async def poll_render_status(
-    composition_id: UUID,
-    session: AsyncSession = Depends(get_session),
-) -> Any:
-    """
-    Poll the render job status for a composition.
-
-    This is a one-shot poll that checks the current status with Video Composer
-    and updates the composition accordingly. For ongoing monitoring, use
-    Celery beat or an external scheduler.
-
-    Raises:
-        404: Composition not found
-        500: Failed to poll render job
-    """
-    from app.services.rendering_service import (
-        CompositionNotFoundError,
-        RenderJobFailedError,
-        RenderingError,
-        get_rendering_service,
-    )
-
-    service = get_rendering_service(session)
-
-    try:
-        composition = await service.poll_render_status(composition_id)
-        return composition
-
-    except CompositionNotFoundError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
-        )
-
-    except RenderJobFailedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        )
-
-    except RenderingError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to poll render job: {e}",
-        )
-
-
-@router.get(
-    "/compositions/{composition_id}/output-media",
-    summary="Get output media metadata for a completed composition",
-)
-async def get_output_media(
-    composition_id: UUID,
-    session: AsyncSession = Depends(get_session),
-) -> Any:
-    """
-    Get output media metadata for a completed composition.
-
-    Returns media metadata from Video Composer if the composition
-    has completed rendering.
-
-    Raises:
-        404: Composition not found or output media not available
-    """
-    from app.services.rendering_service import (
-        CompositionNotFoundError,
-        get_rendering_service,
-    )
-
-    service = get_rendering_service(session)
-
-    try:
-        media = await service.get_output_media(composition_id)
-
-        if not media:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Output media not available for composition {composition_id}",
-            )
-
-        return media.model_dump()
-
-    except CompositionNotFoundError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
-        )

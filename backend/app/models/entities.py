@@ -17,7 +17,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKey
@@ -685,6 +685,20 @@ class ClipComposition(Base, UUIDPrimaryKey, TimestampMixin):
     analysis_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("editorial_suitability_analyses.id", ondelete="SET NULL"), nullable=True
     )
+
+    # Extended lineage - traceability to source media
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clip_candidates.id", ondelete="SET NULL"), nullable=True
+    )
+    media_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )  # Media Indexer media ID
+    transcription_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )  # Media Indexer transcription ID
+    source_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )  # SHA256 of source media file
 
     # Composition version for schema evolution
     composition_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="2")

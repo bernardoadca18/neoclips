@@ -18,13 +18,13 @@ import httpx
 from pydantic import ValidationError
 
 from app.core.config import settings
-from app.schemas.editorial import LLMEditorialAnalysisResponse
 from app.prompts.editorial_prompts import (
-    EDITORIAL_SUITABILITY_V1_PROMPT,
     EDITORIAL_SUITABILITY_V1_HASH,
+    EDITORIAL_SUITABILITY_V1_PROMPT,
     get_editorial_prompt,
     get_editorial_prompt_hash,
 )
+from app.schemas.editorial import LLMEditorialAnalysisResponse
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,18 @@ class NineRouterEditorialProvider:
         return EDITORIAL_SUITABILITY_V1_PROMPT
 
     def _get_prompt_hash(self) -> str | None:
-        """Get the hash for the current prompt configuration."""
+        """Get the hash for the effective prompt.
+
+        Returns hash of custom prompt if provided, otherwise the canonical hash.
+        This ensures prompt_hash reflects the actual prompt sent to the LLM.
+        """
+        import hashlib
+
+        # If custom prompt provided, hash it
+        if self._system_prompt:
+            return hashlib.sha256(self._system_prompt.encode()).hexdigest()[:16]
+
+        # Otherwise use the canonical prompt hash
         hash_value = get_editorial_prompt_hash(self.prompt_id, self.prompt_version)
         if hash_value:
             return hash_value
@@ -314,18 +325,22 @@ Return JSON with your analysis."""
             for seg in context.context_after_segments:
                 all_segment_ids.add(str(seg["id"]))
 
-            if response.recommended_start_segment_id:
-                if str(response.recommended_start_segment_id) not in all_segment_ids:
-                    raise LLMEditorialValidationError(
-                        f"recommended_start_segment_id {response.recommended_start_segment_id} not found in context",
-                        raw_response=raw_content,
-                    )
-            if response.recommended_end_segment_id:
-                if str(response.recommended_end_segment_id) not in all_segment_ids:
-                    raise LLMEditorialValidationError(
-                        f"recommended_end_segment_id {response.recommended_end_segment_id} not found in context",
-                        raw_response=raw_content,
-                    )
+            if (
+                response.recommended_start_segment_id
+                and str(response.recommended_start_segment_id) not in all_segment_ids
+            ):
+                raise LLMEditorialValidationError(
+                    f"recommended_start_segment_id {response.recommended_start_segment_id} not found in context",
+                    raw_response=raw_content,
+                )
+            if (
+                response.recommended_end_segment_id
+                and str(response.recommended_end_segment_id) not in all_segment_ids
+            ):
+                raise LLMEditorialValidationError(
+                    f"recommended_end_segment_id {response.recommended_end_segment_id} not found in context",
+                    raw_response=raw_content,
+                )
 
         return response
 

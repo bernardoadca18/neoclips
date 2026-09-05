@@ -11,8 +11,6 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from celery import shared_task
-
 from app.core.celery_app import celery_app
 from app.core.database import async_session_factory
 
@@ -45,8 +43,8 @@ async def _execute_editorial_analysis_async(analysis_id: UUID) -> dict[str, Any]
     from app.models.entities import EditorialSuitabilityAnalysis
     from app.services.candidate_context_service import CandidateContextService
     from app.services.editorial_analysis_service import (
-        EditorialAnalysisService,
         EditorialAnalysisError,
+        EditorialAnalysisService,
     )
     from app.services.ninerouter_editorial_provider import NineRouterEditorialProvider
 

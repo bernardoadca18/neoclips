@@ -7,11 +7,15 @@ suitable for editorial review and selection.
 import logging
 from uuid import UUID
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import contains_eager
 
-from app.models.entities import ClipCandidate, DiscoveryRun, EditorialSuitabilityAnalysis, ShortEditorialPlan
+from app.models.entities import (
+    ClipCandidate,
+    DiscoveryRun,
+    EditorialSuitabilityAnalysis,
+    ShortEditorialPlan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +120,7 @@ class CandidateShortlistService:
         )
 
         if not include_duplicates:
-            query = query.where(ClipCandidate.is_duplicate == False)
+            query = query.where(ClipCandidate.is_duplicate.is_(False))
 
         result = await self.session.execute(query)
         candidates = result.scalars().all()
@@ -199,7 +203,7 @@ class CandidateShortlistService:
         result = await self.session.execute(
             select(ClipCandidate)
             .where(ClipCandidate.run_id == run_id)
-            .where(ClipCandidate.selected == True)
+            .where(ClipCandidate.selected.is_(True))
             .order_by(ClipCandidate.selection_rank.asc().nulls_last())
         )
         candidates = result.scalars().all()

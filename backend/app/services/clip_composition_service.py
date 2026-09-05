@@ -7,7 +7,6 @@ bridging editorial plans (Stage 4) and rendering (Stage 6).
 import hashlib
 import json
 import logging
-from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -40,7 +39,10 @@ class PlanNotReadyError(CompositionError):
 
 
 class CompositionAlreadyExistsError(CompositionError):
-    """Raised when composition already exists for plan."""
+    """Raised when composition already exists with same fingerprint.
+
+    Deprecated: Use fingerprint-based lookup for idempotency.
+    """
 
     pass
 
@@ -207,17 +209,6 @@ class ClipCompositionService:
                 f"Supported strategies: {self.SUPPORTED_STRATEGIES}"
             )
 
-        # Check for existing composition
-        existing_result = await self.session.execute(
-            select(ClipComposition).where(ClipComposition.plan_id == plan_id)
-        )
-        existing = existing_result.scalar_one_or_none()
-
-        if existing:
-            raise CompositionAlreadyExistsError(
-                f"Composition already exists for plan {plan_id}"
-            )
-
         # Compute fingerprint
         fingerprint = self._compute_fingerprint(
             plan_id=plan.id,
@@ -229,12 +220,48 @@ class ClipCompositionService:
             caption_mode=caption_mode,
         )
 
-        # Create composition
+        # Check for existing composition by fingerprint (idempotency)
+        existing_result = await self.session.execute(
+            select(ClipComposition).where(ClipComposition.fingerprint == fingerprint)
+        )
+        existing = existing_result.scalar_one_or_none()
+
+        if existing:
+            logger.info(
+                f"Composition already exists with fingerprint {fingerprint[:16]}..., returning existing"
+            )
+            return existing
+
+        # Get lineage info from analysis
+        candidate_id = None
+        media_id = None
+        transcription_id = None
+        source_sha256 = None
+
+        if plan.analysis_id:
+            from app.models.entities import EditorialSuitabilityAnalysis
+
+            analysis_result = await self.session.execute(
+                select(EditorialSuitabilityAnalysis).where(
+                    EditorialSuitabilityAnalysis.id == plan.analysis_id
+                )
+            )
+            analysis = analysis_result.scalar_one_or_none()
+            if analysis:
+                candidate_id = analysis.candidate_id
+
+        # Create composition with full lineage
         composition = ClipComposition(
             workflow_id=plan.workflow_id,
             source_id=plan.source_id,
             plan_id=plan.id,
             analysis_id=plan.analysis_id,
+            # Extended lineage fields
+            candidate_id=candidate_id,
+            media_id=media_id,  # Will be populated when rendering
+            transcription_id=transcription_id,  # Will be populated when rendering
+            source_sha256=source_sha256,  # Will be populated when rendering
+            # Timing fields
             source_start_seconds=plan.source_start_seconds,
             source_end_seconds=plan.source_end_seconds,
             duration_seconds=plan.duration_seconds,
@@ -245,7 +272,7 @@ class ClipCompositionService:
             composition_version=2,
             audio_mode=audio_mode,
             caption_mode=caption_mode,
-            status="pending",
+            status="ready",  # Composition is ready for rendering once created
             fingerprint=fingerprint,
         )
 

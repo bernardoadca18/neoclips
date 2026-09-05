@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, AsyncMock
 
 from app.services.clip_composition_service import (
     ClipCompositionService,
-    CompositionAlreadyExistsError,
     PlanNotReadyError,
     PlanNotFoundError,
     UnsupportedStrategyError,
@@ -219,8 +218,8 @@ class TestCreateCompositionFromPlan:
         assert "not yet implemented" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_existing_composition_raises_error(self, service, session):
-        """Existing composition for plan should raise CompositionAlreadyExistsError."""
+    async def test_existing_composition_returns_existing(self, service, session):
+        """Existing composition with same fingerprint should be returned (idempotency)."""
         from sqlalchemy.engine import Result
         from app.models.entities import ShortEditorialPlan, ClipComposition
 
@@ -228,10 +227,14 @@ class TestCreateCompositionFromPlan:
         plan.status = "ready"
         plan.strategy = "TRIM"
         plan.id = uuid4()
+        plan.source_start_seconds = 10.0
+        plan.source_end_seconds = 60.0
+        plan.analysis_id = None
 
         existing_composition = MagicMock(spec=ClipComposition)
+        existing_composition.id = uuid4()
 
-        # First call returns plan, second returns existing composition
+        # First call returns plan, second returns existing composition (fingerprint match)
         results = [
             MagicMock(spec=Result),
             MagicMock(spec=Result),
@@ -240,8 +243,9 @@ class TestCreateCompositionFromPlan:
         results[1].scalar_one_or_none.return_value = existing_composition
         session.execute.side_effect = results
 
-        with pytest.raises(CompositionAlreadyExistsError):
-            await service.create_composition_from_plan(uuid4())
+        # Should return existing composition, not raise error (fingerprint-based idempotency)
+        result = await service.create_composition_from_plan(uuid4())
+        assert result is existing_composition
 
 
 class TestUpdateStatus:
