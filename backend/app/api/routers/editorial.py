@@ -651,7 +651,7 @@ async def create_clip_composition(
     "/plans/{plan_id}/composition",
     response_model=ClipCompositionRead,
     summary="Get composition for a plan",
-    description="Returns the clip composition for a plan if one exists.",
+    description="Returns the clip composition for a plan if one exists. If multiple variants exist, use the plural endpoint.",
 )
 async def get_plan_composition(
     plan_id: UUID,
@@ -660,20 +660,57 @@ async def get_plan_composition(
     """
     Get the clip composition for a plan.
 
+    Returns a single composition. If multiple variants exist (different
+    render_profile/audio_mode/caption_mode), this endpoint returns 409 Conflict;
+    use GET /plans/{plan_id}/compositions to list all variants.
+
     Raises:
         404: No composition found for plan
+        409: Multiple compositions found for plan (variant ambiguity)
     """
     service = ClipCompositionService(session)
 
-    composition = await service.get_composition_by_plan(plan_id)
+    compositions = await service.get_compositions_by_plan(plan_id)
 
-    if not composition:
+    if not compositions:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No composition found for plan {plan_id}",
         )
 
-    return composition
+    if len(compositions) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Multiple compositions found for plan {plan_id} "
+                f"({len(compositions)} variants). "
+                f"Use GET /v1/plans/{plan_id}/compositions to list all variants."
+            ),
+        )
+
+    return compositions[0]
+
+
+@router.get(
+    "/plans/{plan_id}/compositions",
+    response_model=list[ClipCompositionRead],
+    summary="List compositions for a plan",
+    description="Returns all clip compositions for a plan (including variants with different render/audio/caption modes).",
+)
+async def list_plan_compositions(
+    plan_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> list[Any]:
+    """
+    List all clip compositions for a plan.
+
+    Returns all variants (different render_profile/audio_mode/caption_mode).
+    May return an empty list if no compositions exist.
+
+    Unlike the singular endpoint, this does not raise 409 on multiple variants.
+    """
+    service = ClipCompositionService(session)
+    return await service.get_compositions_by_plan(plan_id)
 
 
 @router.get(

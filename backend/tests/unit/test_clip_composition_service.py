@@ -3,14 +3,25 @@
 Tests the composition creation, fingerprint computation, and strategy validation.
 """
 
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
-from unittest.mock import MagicMock, AsyncMock
 
+import pytest
+
+from app.models.entities import (
+    ClipCandidate,
+    ClipComposition,
+    ClipSource,
+    ClipWorkflow,
+    DiscoveryRun,
+    ShortEditorialPlan,
+)
 from app.services.clip_composition_service import (
     ClipCompositionService,
-    PlanNotReadyError,
+    IncompleteLineageError,
+    LineageMismatchError,
     PlanNotFoundError,
+    PlanNotReadyError,
     UnsupportedStrategyError,
 )
 
@@ -278,6 +289,7 @@ class TestCreateCompositionFromPlan:
     async def test_plan_not_ready_raises_error(self, service, session):
         """Plan not in 'ready' status should raise PlanNotReadyError."""
         from sqlalchemy.engine import Result
+
         from app.models.entities import ShortEditorialPlan
 
         plan = MagicMock(spec=ShortEditorialPlan)
@@ -295,6 +307,7 @@ class TestCreateCompositionFromPlan:
     async def test_reject_strategy_raises_error(self, service, session):
         """REJECT strategy should raise UnsupportedStrategyError."""
         from sqlalchemy.engine import Result
+
         from app.models.entities import ShortEditorialPlan
 
         plan = MagicMock(spec=ShortEditorialPlan)
@@ -314,6 +327,7 @@ class TestCreateCompositionFromPlan:
     async def test_reauthor_strategy_raises_error(self, service, session):
         """REAUTHOR strategy should raise UnsupportedStrategyError."""
         from sqlalchemy.engine import Result
+
         from app.models.entities import ShortEditorialPlan
 
         plan = MagicMock(spec=ShortEditorialPlan)
@@ -333,7 +347,8 @@ class TestCreateCompositionFromPlan:
     async def test_existing_composition_returns_existing(self, service, session):
         """Existing composition with same fingerprint should be returned (idempotency)."""
         from sqlalchemy.engine import Result
-        from app.models.entities import ShortEditorialPlan, ClipComposition, ClipSource
+
+        from app.models.entities import ClipComposition, ClipSource, ShortEditorialPlan
 
         # Create real UUIDs for lineage
         plan_id = uuid4()
@@ -365,18 +380,40 @@ class TestCreateCompositionFromPlan:
         source.transcription_id = transcription_id
         source.source_sha256 = "abc123def456"
 
+        # Mock workflow for lineage validation
+        workflow = MagicMock(spec=ClipWorkflow)
+        workflow.id = workflow_id
+        workflow.source_id = source_id
+
+        # Mock candidate for lineage validation
+        candidate = MagicMock(spec=ClipCandidate)
+        candidate.id = candidate_id
+        candidate.run_id = uuid4()
+
+        # Mock discovery run for lineage validation
+        run = MagicMock(spec=DiscoveryRun)
+        run.id = candidate.run_id
+        run.workflow_id = workflow_id
+        run.source_id = source_id
+
         existing_composition = MagicMock(spec=ClipComposition)
         existing_composition.id = uuid4()
 
-        # First call returns plan, second returns source, third returns existing composition
+        # Order: plan, source, workflow, candidate, run, existing composition
         results = [
+            MagicMock(spec=Result),
+            MagicMock(spec=Result),
+            MagicMock(spec=Result),
             MagicMock(spec=Result),
             MagicMock(spec=Result),
             MagicMock(spec=Result),
         ]
         results[0].scalar_one_or_none.return_value = plan
         results[1].scalar_one_or_none.return_value = source
-        results[2].scalar_one_or_none.return_value = existing_composition
+        results[2].scalar_one_or_none.return_value = workflow
+        results[3].scalar_one_or_none.return_value = candidate
+        results[4].scalar_one_or_none.return_value = run
+        results[5].scalar_one_or_none.return_value = existing_composition
         session.execute.side_effect = results
 
         # Should return existing composition, not raise error (fingerprint-based idempotency)
@@ -406,6 +443,7 @@ class TestLineageValidation:
     async def test_plan_without_source_id_raises_error(self, service, session):
         """Plan without source_id should raise IncompleteLineageError."""
         from sqlalchemy.engine import Result
+
         from app.models.entities import ShortEditorialPlan
         from app.services.clip_composition_service import IncompleteLineageError
 
@@ -427,6 +465,7 @@ class TestLineageValidation:
     async def test_source_not_found_raises_error(self, service, session):
         """Missing ClipSource should raise IncompleteLineageError."""
         from sqlalchemy.engine import Result
+
         from app.models.entities import ShortEditorialPlan
         from app.services.clip_composition_service import IncompleteLineageError
 
@@ -452,7 +491,8 @@ class TestLineageValidation:
     async def test_source_without_media_id_raises_error(self, service, session):
         """ClipSource without media_id should raise IncompleteLineageError."""
         from sqlalchemy.engine import Result
-        from app.models.entities import ShortEditorialPlan, ClipSource
+
+        from app.models.entities import ClipSource, ShortEditorialPlan
         from app.services.clip_composition_service import IncompleteLineageError
 
         source_id = uuid4()
@@ -483,7 +523,8 @@ class TestLineageValidation:
     async def test_source_without_transcription_id_raises_error(self, service, session):
         """ClipSource without transcription_id should raise IncompleteLineageError."""
         from sqlalchemy.engine import Result
-        from app.models.entities import ShortEditorialPlan, ClipSource
+
+        from app.models.entities import ClipSource, ShortEditorialPlan
         from app.services.clip_composition_service import IncompleteLineageError
 
         source_id = uuid4()
@@ -515,7 +556,8 @@ class TestLineageValidation:
     async def test_source_without_source_sha256_raises_error(self, service, session):
         """ClipSource without source_sha256 should raise IncompleteLineageError."""
         from sqlalchemy.engine import Result
-        from app.models.entities import ShortEditorialPlan, ClipSource
+
+        from app.models.entities import ClipSource, ShortEditorialPlan
         from app.services.clip_composition_service import IncompleteLineageError
 
         source_id = uuid4()
@@ -548,7 +590,8 @@ class TestLineageValidation:
     async def test_lineage_mismatch_raises_error(self, service, session):
         """Mismatch between plan.candidate_id and analysis.candidate_id should raise LineageMismatchError."""
         from sqlalchemy.engine import Result
-        from app.models.entities import ShortEditorialPlan, ClipSource, EditorialSuitabilityAnalysis
+
+        from app.models.entities import ClipSource, EditorialSuitabilityAnalysis, ShortEditorialPlan
         from app.services.clip_composition_service import LineageMismatchError
 
         source_id = uuid4()

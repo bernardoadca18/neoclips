@@ -1,9 +1,7 @@
 """Unit tests for EditorialPlanService."""
 
-import hashlib
 import json
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -11,19 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entities import (
     ClipCandidate,
-    ClipSource,
     ClipWorkflow,
     DiscoveryRun,
     EditorialSuitabilityAnalysis,
     ShortEditorialPlan,
 )
 from app.services.editorial_plan_service import (
-    EditorialPlanService,
-    PlanError,
-    CandidateNotFoundError,
     AnalysisNotFoundError,
-    PlanAlreadyExistsError,
+    EditorialPlanService,
     InvalidStrategyError,
+    PlanError,
 )
 
 

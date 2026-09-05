@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.entities import ClipCandidate, DiscoveryRun
 from app.services.candidate_shortlist_service import (
     CandidateShortlistService,
-    ShortlistError,
     RunNotFoundError,
     RunNotTerminalError,
 )
@@ -216,11 +215,7 @@ class TestGetShortlist:
                 return run_result
             elif call_count == 2:
                 return candidates_result
-            elif call_count == 3:
-                result = MagicMock()
-                result.__iter__ = MagicMock(return_value=iter([]))
-                return result
-            elif call_count == 4:
+            elif call_count == 3 or call_count == 4:
                 result = MagicMock()
                 result.__iter__ = MagicMock(return_value=iter([]))
                 return result
@@ -260,11 +255,7 @@ class TestGetShortlist:
                 return run_result
             elif call_count == 2:
                 return candidates_result
-            elif call_count == 3:
-                result = MagicMock()
-                result.__iter__ = MagicMock(return_value=iter([]))
-                return result
-            elif call_count == 4:
+            elif call_count == 3 or call_count == 4:
                 result = MagicMock()
                 result.__iter__ = MagicMock(return_value=iter([]))
                 return result

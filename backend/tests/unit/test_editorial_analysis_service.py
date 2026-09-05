@@ -1,29 +1,21 @@
 """Unit tests for EditorialAnalysisService."""
 
-import hashlib
 import json
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entities import (
     ClipCandidate,
-    ClipSource,
-    ClipWorkflow,
-    DiscoveryRun,
     EditorialSuitabilityAnalysis,
 )
 from app.services.editorial_analysis_service import (
-    EditorialAnalysisService,
-    EditorialAnalysisError,
     CandidateNotReadyError,
+    EditorialAnalysisService,
 )
 from app.services.ninerouter_editorial_provider import (
-    CandidateContext,
     LLMEditorialAnalysisResponse,
     NineRouterEditorialProvider,
 )

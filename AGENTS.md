@@ -12,7 +12,7 @@ NeoClips is a clip discovery and production engine integrated with the NeoVids e
 **Stage 3 — Transcript Clip Discovery** (Complete)
 **Stage 4 — Editorial Suite** (Complete)
 **Stage 5 — Clip Composition** (Complete)
-**Stage 6 — Video Composer Integration** (Complete)
+**Stage 6 — Video Composer Integration** (Not yet started)
 
 The following are implemented:
 - Core infrastructure (PostgreSQL, Redis, FastAPI, Celery)
@@ -38,14 +38,13 @@ The following are implemented:
 - Clip composition contract (Stage 5)
 - Bounded transcript retrieval for canonicalization
 - Explicit failure policy (no silent fallbacks)
-- Video Composer HTTP client with render job submission/polling
-- Rendering service for clip composition orchestration
-- Celery tasks for render job submission and status polling
-- Rendering API endpoints (/compositions/{id}/render, /poll-render, /output-media)
+- Full lineage cross-entity validation (ClipSource → ClipWorkflow → DiscoveryRun → ClipCandidate → EditorialSuitabilityAnalysis → ShortEditorialPlan → ClipComposition)
+- Composition variants support (multiple compositions per plan with different render_profile/audio_mode/caption_mode)
 
 ## Not Yet Implemented (Future Stages)
 
 DO NOT implement these without explicit instruction:
+- Stage 6: Video Composer Integration (rendering pipeline)
 - Stage 7: Packaging
 - Stage 8: QA
 
@@ -53,7 +52,7 @@ DO NOT implement these without explicit instruction:
 
 1. **PostgreSQL is the source of truth** - Workflow state is persisted in PostgreSQL, not inferred from Celery tasks.
 
-2. **No direct database access to other services** - All interactions with Media Indexer and Video Composer must go through HTTP APIs.
+2. **No direct database access to other services** - All interactions with Media Indexer must go through HTTP APIs.
 
 3. **Idempotency** - Workflow creation supports idempotency via the `Idempotency-Key` header.
 
@@ -71,9 +70,9 @@ DO NOT implement these without explicit instruction:
 
 10. **Temporal IoU for deduplication** - Candidates with IoU >= 0.5 are marked as duplicates, keeping the higher-scored candidate.
 
-11. **Rendering workflow** - ClipComposition transitions from 'ready' to 'rendering' to 'completed'. Video Composer handles the actual video rendering via HTTP API.
+11. **Full lineage validation** - ClipComposition creation validates the complete chain: ClipSource → ClipWorkflow → DiscoveryRun → ClipCandidate → EditorialSuitabilityAnalysis → ShortEditorialPlan. Cross-entity mismatches raise LineageMismatchError.
 
-12. **One-shot polling for rendering** - Each render poll task makes a single API call to Video Composer, no retry loops in the client. Celery handles retries.
+12. **Composition variants** - Multiple compositions can exist per plan with different render_profile/audio_mode/caption_mode. Singular endpoint returns 409 on ambiguity; plural endpoint lists all variants.
 
 ## Testing
 
@@ -92,12 +91,4 @@ DO NOT implement these without explicit instruction:
 
 NeoClips never accesses databases of other services directly. Integration points:
 - `MediaIndexerClient` - HTTP client for Media Indexer API
-- `VideoComposerClient` - HTTP client for Video Composer API (rendering)
-- `NineRouterDiscoveryProvider` - LLM gateway via 9Router
-
-## Rendering API Endpoints
-
-Stage 6 rendering endpoints:
-- `POST /v1/editorial/compositions/{composition_id}/render` - Submit render job to Video Composer
-- `POST /v1/editorial/compositions/{composition_id}/poll-render` - Poll render job status (one-shot)
-- `GET /v1/editorial/compositions/{composition_id}/output-media` - Get output media metadata for completed render
+- `NineRouterEditorialProvider` - LLM gateway via 9Router for editorial analysis

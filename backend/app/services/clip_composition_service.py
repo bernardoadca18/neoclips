@@ -13,8 +13,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entities import (
+    ClipCandidate,
     ClipComposition,
     ClipSource,
+    ClipWorkflow,
+    DiscoveryRun,
+    EditorialSuitabilityAnalysis,
     ShortEditorialPlan,
 )
 
@@ -299,8 +303,6 @@ class ClipCompositionService:
         candidate_id: UUID | None = None
 
         if plan.analysis_id:
-            from app.models.entities import EditorialSuitabilityAnalysis
-
             analysis_result = await self.session.execute(
                 select(EditorialSuitabilityAnalysis).where(
                     EditorialSuitabilityAnalysis.id == plan.analysis_id
@@ -327,6 +329,77 @@ class ClipCompositionService:
                 f"Cannot resolve candidate_id for plan {plan_id} - "
                 "plan has no candidate_id and analysis is missing or has no candidate_id"
             )
+
+        # Step 3.5: Validate full lineage chain
+        # Chain: ClipSource → ClipWorkflow → DiscoveryRun → ClipCandidate → Analysis → Plan
+        # Load ClipWorkflow
+        workflow_result = await self.session.execute(
+            select(ClipWorkflow).where(ClipWorkflow.id == plan.workflow_id)
+        )
+        workflow = workflow_result.scalar_one_or_none()
+
+        if not workflow:
+            raise IncompleteLineageError(
+                f"ClipWorkflow {plan.workflow_id} not found for plan {plan_id}"
+            )
+
+        # Cross-validate: workflow.source_id == plan.source_id
+        if workflow.source_id != plan.source_id:
+            raise LineageMismatchError(
+                f"Workflow source_id {workflow.source_id} does not match "
+                f"plan source_id {plan.source_id}"
+            )
+
+        # Load ClipCandidate
+        candidate_result = await self.session.execute(
+            select(ClipCandidate).where(ClipCandidate.id == candidate_id)
+        )
+        candidate = candidate_result.scalar_one_or_none()
+
+        if not candidate:
+            raise IncompleteLineageError(
+                f"ClipCandidate {candidate_id} not found for plan {plan_id}"
+            )
+
+        # Load DiscoveryRun via candidate.run_id
+        run_result = await self.session.execute(
+            select(DiscoveryRun).where(DiscoveryRun.id == candidate.run_id)
+        )
+        run = run_result.scalar_one_or_none()
+
+        if not run:
+            raise IncompleteLineageError(
+                f"DiscoveryRun {candidate.run_id} not found for candidate {candidate_id}"
+            )
+
+        # Cross-validate: run.workflow_id == workflow.id
+        if run.workflow_id != workflow.id:
+            raise LineageMismatchError(
+                f"DiscoveryRun workflow_id {run.workflow_id} does not match "
+                f"ClipWorkflow id {workflow.id}"
+            )
+
+        # Cross-validate: run.source_id == plan.source_id
+        if run.source_id != plan.source_id:
+            raise LineageMismatchError(
+                f"DiscoveryRun source_id {run.source_id} does not match "
+                f"plan source_id {plan.source_id}"
+            )
+
+        # Cross-validate: analysis lineage if present
+        if plan.analysis_id and analysis:
+            # analysis.candidate_id should match candidate_id
+            if analysis.candidate_id != candidate_id:
+                raise LineageMismatchError(
+                    f"Analysis candidate_id {analysis.candidate_id} does not match "
+                    f"resolved candidate_id {candidate_id}"
+                )
+            # analysis.source_id should match plan.source_id
+            if analysis.source_id != plan.source_id:
+                raise LineageMismatchError(
+                    f"Analysis source_id {analysis.source_id} does not match "
+                    f"plan source_id {plan.source_id}"
+                )
 
         # Step 4: Compute fingerprint AFTER lineage resolution
         fingerprint = self._compute_fingerprint(
@@ -442,11 +515,36 @@ class ClipCompositionService:
     async def get_composition_by_plan(
         self, plan_id: UUID
     ) -> ClipComposition | None:
-        """Get the composition for a plan."""
+        """Get the composition for a plan.
+
+        WARNING: This method returns a single composition. If multiple variants
+        exist (different render_profile/audio_mode/caption_mode), this will
+        raise MultipleResultsFound. Use get_compositions_by_plan for robust
+        handling of variants.
+        """
         result = await self.session.execute(
             select(ClipComposition).where(ClipComposition.plan_id == plan_id)
         )
         return result.scalar_one_or_none()
+
+    async def get_compositions_by_plan(
+        self, plan_id: UUID
+    ) -> list[ClipComposition]:
+        """Get all compositions for a plan.
+
+        Returns all variants (different render_profile/audio_mode/caption_mode)
+        for a single plan. Use this when you need to handle multiple compositions
+        per plan.
+
+        Returns:
+            List of ClipComposition entities (may be empty)
+        """
+        result = await self.session.execute(
+            select(ClipComposition)
+            .where(ClipComposition.plan_id == plan_id)
+            .order_by(ClipComposition.created_at.desc())
+        )
+        return list(result.scalars().all())
 
     async def get_compositions_by_workflow(
         self, workflow_id: UUID
@@ -467,4 +565,6 @@ __all__ = [
     "PlanNotReadyError",
     "CompositionAlreadyExistsError",
     "UnsupportedStrategyError",
+    "IncompleteLineageError",
+    "LineageMismatchError",
 ]

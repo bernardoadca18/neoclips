@@ -4,8 +4,9 @@ Tests the strategy-aware canonicalization for TRIM and ADD_CONTEXT strategies,
 including invariant validation.
 """
 
-import pytest
 from uuid import uuid4
+
+import pytest
 
 from app.services.editorial_plan_service import (
     CanonicalizationError,
@@ -20,7 +21,7 @@ class TestResolveSegmentIdsToTimestamps:
     def mock_media_indexer_client(self):
         """Create a mock media indexer client."""
         from unittest.mock import AsyncMock
-        from app.clients.media_indexer_client import TranscriptionOut
+
 
         client = AsyncMock()
         return client
@@ -29,6 +30,7 @@ class TestResolveSegmentIdsToTimestamps:
     def service(self, mock_media_indexer_client):
         """Create an EditorialPlanService instance."""
         from unittest.mock import MagicMock
+
         from sqlalchemy.ext.asyncio import AsyncSession
 
         session = MagicMock(spec=AsyncSession)

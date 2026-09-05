@@ -8,11 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entities import ClipCandidate, DiscoveryRun
 from app.services.candidate_selection_service import (
-    CandidateSelectionService,
-    SelectionError,
     CandidateNotFoundError,
+    CandidateSelectionService,
     DuplicateSelectionError,
     RunNotTerminalError,
+    SelectionError,
 )
 
 
