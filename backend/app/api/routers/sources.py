@@ -1,6 +1,5 @@
 """ClipSource API router."""
 
-import hashlib
 import logging
 from typing import Annotated, Any
 from uuid import UUID
@@ -197,62 +196,6 @@ async def delete_source(
         )
 
 
-class _HashingFileWrapper:
-    """File-like wrapper that computes SHA256 while streaming.
-
-    Provides true bounded-memory streaming: data is never fully loaded
-    into RAM. Chunks are streamed directly to httpx which streams to
-    the Media Indexer.
-    """
-
-    def __init__(self, upload_file: UploadFile):
-        self._upload_file = upload_file
-        self._hash = hashlib.sha256()
-        self._total_size = 0
-        self._finished = False
-        self._final_hash: str | None = None
-
-    def read(self, size: int = -1) -> bytes:
-        """Synchronous read - not used, but required for file protocol."""
-        raise NotImplementedError("Use async read via SpooledTemporaryFile")
-
-    async def aread(self, size: int = -1) -> bytes:
-        """Async read that updates hash while streaming."""
-        chunk_size = size if size > 0 else 1024 * 1024
-        # FastAPI UploadFile uses SpooledTemporaryFile which has async read
-        chunk = await self._upload_file.read(chunk_size)
-        if chunk:
-            self._hash.update(chunk)
-            self._total_size += len(chunk)
-        return chunk
-
-    async def read_chunk(self, size: int = 1024 * 1024) -> bytes:
-        """Read a chunk and update hash."""
-        chunk = await self._upload_file.read(size)
-        if chunk:
-            self._hash.update(chunk)
-            self._total_size += len(chunk)
-        return chunk
-
-    def get_sha256(self) -> str:
-        """Get the final SHA256 hash.
-
-        Must be called after all chunks have been read.
-        """
-        if not self._finished:
-            self._finished = True
-            self._final_hash = self._hash.hexdigest()
-        return self._final_hash or ""
-
-    @property
-    def total_size(self) -> int:
-        return self._total_size
-
-    @property
-    def name(self) -> str:
-        return self._upload_file.filename or "video.mp4"
-
-
 @router.post(
     "/upload",
     response_model=ClipSourceResponse,
@@ -330,9 +273,6 @@ async def upload_video_source(
         label = " - ".join(p for p in label_parts if p) or f"Source {source.id}"
         label = label[:200]  # Max length in Media Indexer
 
-        # Create hashing wrapper for bounded streaming
-        video_wrapper = _HashingFileWrapper(video)
-
         # Upload to Media Indexer using real ingest endpoint
         # POST /projects/{project_id}/sessions with multipart form
         try:
@@ -345,8 +285,9 @@ async def upload_video_source(
                 idempotency_key=idempotency_key,
             )
 
-            # Get SHA256 from wrapper
-            sha256 = video_wrapper.get_sha256()
+            # Use Media Indexer's SHA-256 as authoritative source
+            # Media Indexer computes hash during ingestion - this is the identity authority
+            sha256 = ingest_result.session.media.sha256 if ingest_result.session.media else None
 
             # Update source with Media Indexer IDs
             source.media_session_id = ingest_result.session.id
@@ -354,7 +295,8 @@ async def upload_video_source(
             source.media_id = ingest_result.session.media_id
             source.media_initial_job_id = ingest_result.job.id
             source.media_session_label = label
-            source.source_sha256 = sha256
+            if sha256:
+                source.source_sha256 = sha256
             source.status = "ingesting"
 
             await session.commit()
@@ -367,8 +309,7 @@ async def upload_video_source(
                     "session_id": str(ingest_result.session.id),
                     "media_id": str(ingest_result.session.media_id),
                     "job_id": str(ingest_result.job.id),
-                    "size_bytes": video_wrapper.total_size,
-                    "sha256": sha256[:16] + "...",
+                    "sha256": sha256[:16] + "..." if sha256 else None,
                 },
             )
 
@@ -376,7 +317,7 @@ async def upload_video_source(
 
         except MediaIndexerConnectionError as e:
             logger.error("media_indexer_connection_error", extra={"error": str(e)})
-            await source_service.update(source.id, ClipSourceUpdate(status="failed"))
+            await source_service.update_status(source.id, "failed")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -390,7 +331,7 @@ async def upload_video_source(
 
         except MediaIndexerTimeoutError as e:
             logger.error("media_indexer_timeout", extra={"error": str(e)})
-            await source_service.update(source.id, ClipSourceUpdate(status="failed"))
+            await source_service.update_status(source.id, "failed")
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail={
@@ -404,7 +345,7 @@ async def upload_video_source(
 
         except MediaIndexerAPIError as e:
             logger.error("media_indexer_api_error", extra={"error": str(e), "status_code": e.status_code})
-            await source_service.update(source.id, ClipSourceUpdate(status="failed"))
+            await source_service.update_status(source.id, "failed")
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail={

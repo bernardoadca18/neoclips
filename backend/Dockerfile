@@ -7,12 +7,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy application code first for pip install
-COPY app ./app
+# Copy dependency files first for better caching
 COPY pyproject.toml .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir "."
+
+# Copy application code
+COPY app ./app
 
 # Copy Alembic for migrations
 COPY alembic.ini .

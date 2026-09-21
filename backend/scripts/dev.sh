@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+REPO_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 echo "Starting NeoClips development environment..."
 
@@ -18,8 +18,8 @@ sleep 3
 
 # Run migrations
 cd "$SCRIPT_DIR"
-alembic upgrade head
+.venv/bin/alembic upgrade head
 
 # Start API
 echo "Starting API on port 8020..."
-uvicorn app.main:app --reload --port 8020
+.venv/bin/uvicorn app.main:app --reload --port 8020

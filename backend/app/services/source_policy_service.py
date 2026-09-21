@@ -21,6 +21,11 @@ class PolicyAlreadyExistsError(Exception):
     pass
 
 
+class PolicyInUseError(Exception):
+    """Raised when attempting to delete a policy that is in use."""
+    pass
+
+
 class SourcePolicyService(BaseService[SourcePolicyRepository]):
     """Service for SourcePolicy business logic."""
 
@@ -64,8 +69,24 @@ class SourcePolicyService(BaseService[SourcePolicyRepository]):
         return policy
 
     async def delete(self, policy_id: UUID) -> None:
-        """Delete a policy."""
+        """Delete a policy.
+
+        Raises PolicyInUseError if the policy is referenced by any ClipSource.
+        This protects provenance and lineage.
+        """
         policy = await self.get(policy_id)
+
+        # Check if policy is in use
+        from app.repositories.clip_source_repository import ClipSourceRepository
+        source_repo = ClipSourceRepository(self.session)
+        sources_using_policy = await source_repo.get_by_policy(policy_id)
+
+        if sources_using_policy:
+            raise PolicyInUseError(
+                f"Cannot delete policy {policy_id}: it is referenced by "
+                f"{len(sources_using_policy)} source(s)"
+            )
+
         await self.repository.delete(policy)
 
     async def verify(self, policy_id: UUID, evidence_uri: str | None = None, evidence_note: str | None = None) -> SourcePolicy:

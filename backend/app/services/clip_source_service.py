@@ -10,6 +10,10 @@ from app.repositories.clip_source_repository import ClipSourceRepository
 from app.repositories.source_policy_repository import SourcePolicyRepository
 from app.schemas.clip_source import ClipSourceCreate, ClipSourceUpdate
 from app.services.base import BaseService
+from app.services.policy_eligibility_service import (
+    PolicyEligibilityService,
+    PolicyViolationError,
+)
 
 
 class SourceNotFoundError(Exception):
@@ -79,8 +83,14 @@ class ClipSourceService(BaseService[ClipSourceRepository]):
             if not policy:
                 raise PolicyNotFoundError(f"Policy {data.source_policy_id} not found")
 
-            if policy.verification_status != "verified":
-                raise ValidationError("safe_automated mode requires a verified policy")
+            # Source admission validation using PolicyEligibilityService
+            # This checks basic eligibility (verified, derivatives_allowed)
+            # Full clip production validation happens at clip creation time
+            eligibility_service = PolicyEligibilityService()
+            try:
+                eligibility_service.validate_for_source_admission(policy)
+            except PolicyViolationError as e:
+                raise ValidationError(f"Policy validation failed: {e.reason}") from e
 
             create_data["rights_status"] = "verified"
 
@@ -105,9 +115,38 @@ class ClipSourceService(BaseService[ClipSourceRepository]):
         return await self.repository.get_all(limit=limit, offset=offset)
 
     async def update(self, source_id: UUID, data: ClipSourceUpdate) -> ClipSource:
-        """Update a source."""
+        """Update a source.
+
+        If source_policy_id is changed, rights_status is re-evaluated atomically.
+        """
         source = await self.get(source_id)
         update_data = data.model_dump(exclude_unset=True)
+
+        # Revalidate policy if changed
+        if "source_policy_id" in update_data:
+            new_policy_id = update_data["source_policy_id"]
+
+            if new_policy_id is None:
+                # Policy removed - rights become unverified
+                update_data["rights_status"] = "unverified"
+            else:
+                # Fetch and validate new policy
+                policy = await self.policy_repository.get(new_policy_id)
+                if not policy:
+                    raise PolicyNotFoundError(f"Policy {new_policy_id} not found")
+
+                # Validate policy for source admission
+                eligibility_service = PolicyEligibilityService()
+                try:
+                    eligibility_service.validate_for_source_admission(policy)
+                    update_data["rights_status"] = "verified"
+                except PolicyViolationError as e:
+                    # Policy is valid but not eligible - set appropriate status
+                    if policy.verification_status == "blocked":
+                        update_data["rights_status"] = "blocked"
+                    else:
+                        update_data["rights_status"] = "unverified"
+
         source = await self.repository.update(source, update_data)
         return source
 

@@ -28,12 +28,8 @@ from app.models.entities import ClipSource
 
 logger = logging.getLogger(__name__)
 
-# Poll intervals in seconds
-POLL_INTERVAL_SECONDS = 5
-
-# Durable timeouts in seconds (based on elapsed time, not attempt count)
-INITIAL_INDEX_TIMEOUT_SECONDS = 600  # 10 minutes
-TRANSCRIPTION_TIMEOUT_SECONDS = 1200  # 20 minutes
+# Import settings for configurable timeouts
+from app.core.config import settings
 
 
 @celery_app.task(name="app.tasks.placeholder")  # type: ignore[untyped-decorator]
@@ -96,7 +92,7 @@ async def _poll_initial_index_async(source_id: UUID, task: Any, attempt: int) ->
             return {"status": "failed", "error": "No media_initial_job_id - cannot poll"}
 
         # Check durable timeout
-        if _check_timeout(source.phase_started_at, INITIAL_INDEX_TIMEOUT_SECONDS):
+        if _check_timeout(source.phase_started_at, settings.media_indexer_initial_index_timeout_seconds):
             logger.error(
                 "initial_index_timeout",
                 extra={
@@ -159,7 +155,7 @@ async def _poll_initial_index_async(source_id: UUID, task: Any, attempt: int) ->
                 # Start polling transcription with fresh attempt count
                 poll_transcription_task.apply_async(
                     args=[str(source_id), 0],
-                    countdown=POLL_INTERVAL_SECONDS,
+                    countdown=settings.media_indexer_poll_interval_seconds,
                 )
 
                 return {
@@ -190,7 +186,7 @@ async def _poll_initial_index_async(source_id: UUID, task: Any, attempt: int) ->
 
             poll_initial_index_task.apply_async(
                 args=[str(source_id), attempt + 1],
-                countdown=POLL_INTERVAL_SECONDS,
+                countdown=settings.media_indexer_poll_interval_seconds,
             )
 
             return {"status": "polling", "job_status": job.status, "progress": job.progress}
@@ -203,7 +199,7 @@ async def _poll_initial_index_async(source_id: UUID, task: Any, attempt: int) ->
             # Re-schedule on connection error
             poll_initial_index_task.apply_async(
                 args=[str(source_id), attempt + 1],
-                countdown=POLL_INTERVAL_SECONDS * 2,  # Backoff
+                countdown=settings.media_indexer_poll_interval_seconds * 2,  # Backoff
             )
             return {"status": "retrying", "error": str(e)}
 
@@ -215,7 +211,7 @@ async def _poll_initial_index_async(source_id: UUID, task: Any, attempt: int) ->
             # Re-schedule on timeout
             poll_initial_index_task.apply_async(
                 args=[str(source_id), attempt + 1],
-                countdown=POLL_INTERVAL_SECONDS * 2,
+                countdown=settings.media_indexer_poll_interval_seconds * 2,
             )
             return {"status": "retrying", "error": str(e)}
 
@@ -232,7 +228,7 @@ async def _poll_initial_index_async(source_id: UUID, task: Any, attempt: int) ->
             # Re-schedule on other API errors
             poll_initial_index_task.apply_async(
                 args=[str(source_id), attempt + 1],
-                countdown=POLL_INTERVAL_SECONDS * 2,
+                countdown=settings.media_indexer_poll_interval_seconds * 2,
             )
             return {"status": "retrying", "error": str(e)}
 
@@ -279,7 +275,7 @@ async def _poll_transcription_async(source_id: UUID, task: Any, attempt: int) ->
             return {"status": "failed", "error": "No transcription_job_id - cannot poll"}
 
         # Check durable timeout
-        if _check_timeout(source.phase_started_at, TRANSCRIPTION_TIMEOUT_SECONDS):
+        if _check_timeout(source.phase_started_at, settings.media_indexer_transcription_timeout_seconds):
             logger.error(
                 "transcription_timeout",
                 extra={
@@ -359,7 +355,7 @@ async def _poll_transcription_async(source_id: UUID, task: Any, attempt: int) ->
 
             poll_transcription_task.apply_async(
                 args=[str(source_id), attempt + 1],
-                countdown=POLL_INTERVAL_SECONDS,
+                countdown=settings.media_indexer_poll_interval_seconds,
             )
 
             return {"status": "polling", "job_status": job.status, "progress": job.progress}
@@ -371,7 +367,7 @@ async def _poll_transcription_async(source_id: UUID, task: Any, attempt: int) ->
             )
             poll_transcription_task.apply_async(
                 args=[str(source_id), attempt + 1],
-                countdown=POLL_INTERVAL_SECONDS * 2,
+                countdown=settings.media_indexer_poll_interval_seconds * 2,
             )
             return {"status": "retrying", "error": str(e)}
 
@@ -382,7 +378,7 @@ async def _poll_transcription_async(source_id: UUID, task: Any, attempt: int) ->
             )
             poll_transcription_task.apply_async(
                 args=[str(source_id), attempt + 1],
-                countdown=POLL_INTERVAL_SECONDS * 2,
+                countdown=settings.media_indexer_poll_interval_seconds * 2,
             )
             return {"status": "retrying", "error": str(e)}
 
@@ -397,7 +393,7 @@ async def _poll_transcription_async(source_id: UUID, task: Any, attempt: int) ->
                 return {"status": "failed", "error": "Job not found in Media Indexer"}
             poll_transcription_task.apply_async(
                 args=[str(source_id), attempt + 1],
-                countdown=POLL_INTERVAL_SECONDS * 2,
+                countdown=settings.media_indexer_poll_interval_seconds * 2,
             )
             return {"status": "retrying", "error": str(e)}
 
@@ -446,7 +442,7 @@ async def _start_source_pipeline_async(source_id: UUID) -> dict[str, Any]:
         # Start polling
         poll_initial_index_task.apply_async(
             args=[str(source_id), 0],
-            countdown=POLL_INTERVAL_SECONDS,
+            countdown=settings.media_indexer_poll_interval_seconds,
         )
 
         logger.info(
@@ -498,7 +494,7 @@ async def _resume_incomplete_sources_async() -> int:
                 # Resume initial index polling
                 poll_initial_index_task.apply_async(
                     args=[str(source.id), 0],
-                    countdown=POLL_INTERVAL_SECONDS,
+                    countdown=settings.media_indexer_poll_interval_seconds,
                 )
                 logger.info(
                     "resumed_ingesting",
@@ -510,7 +506,7 @@ async def _resume_incomplete_sources_async() -> int:
                 # Resume transcription polling
                 poll_transcription_task.apply_async(
                     args=[str(source.id), 0],
-                    countdown=POLL_INTERVAL_SECONDS,
+                    countdown=settings.media_indexer_poll_interval_seconds,
                 )
                 logger.info(
                     "resumed_transcribing",

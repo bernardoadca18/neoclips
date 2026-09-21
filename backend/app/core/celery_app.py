@@ -15,7 +15,7 @@ celery_app = Celery(
     "neoclips",
     broker=str(settings.redis_url),
     backend=str(settings.redis_url),
-    include=["app.tasks", "app.tasks.discovery_tasks"],
+    include=["app.tasks", "app.tasks.discovery_tasks", "app.tasks.editorial_tasks"],
 )
 
 # Celery configuration

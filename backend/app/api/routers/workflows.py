@@ -209,6 +209,17 @@ async def create_workflow(
                 }
             },
         )
+    except InvalidStateTransitionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": {
+                    "category": "validation_error",
+                    "message": str(e),
+                    "details": {},
+                }
+            },
+        )
 
 
 @router.get(

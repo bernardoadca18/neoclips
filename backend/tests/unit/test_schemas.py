@@ -36,16 +36,29 @@ def test_clip_source_create_invalid_mode():
         ClipSourceCreate(mode="invalid_mode")
 
 
-def test_clip_source_update_valid_status():
-    """Valid status values are accepted."""
-    update = ClipSourceUpdate(status="ready")
-    assert update.status == "ready"
+def test_clip_source_update_status_not_allowed():
+    """Status field is not allowed in public update schema."""
+    with pytest.raises(Exception, match="Extra inputs are not permitted"):
+        ClipSourceUpdate(status="ready")
 
 
-def test_clip_source_update_invalid_status():
-    """Invalid status raises validation error."""
-    with pytest.raises(ValueError, match="status must be one of"):
-        ClipSourceUpdate(status="invalid_status")
+def test_clip_source_update_internal_fields_not_allowed():
+    """Internal fields are not allowed in public update schema."""
+    from uuid import uuid4
+    with pytest.raises(Exception, match="Extra inputs are not permitted"):
+        ClipSourceUpdate(media_project_id=uuid4())
+
+
+def test_clip_source_create_internal_fields_not_allowed():
+    """Internal fields are not allowed in public create schema."""
+    from uuid import uuid4
+    policy_id = uuid4()
+    with pytest.raises(Exception, match="Extra inputs are not permitted"):
+        ClipSourceCreate(
+            mode="safe_automated",
+            source_policy_id=policy_id,
+            media_project_id=uuid4(),  # Internal field, should be rejected
+        )
 
 
 def test_clip_source_create_with_policy():

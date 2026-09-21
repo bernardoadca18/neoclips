@@ -39,10 +39,12 @@ class SourcePolicyCreate(SourcePolicyBase):
 
 
 class SourcePolicyUpdate(BaseModel):
-    """Schema for updating a SourcePolicy."""
+    """Schema for updating a SourcePolicy.
 
-    name: str | None = Field(None, min_length=1, max_length=255)
-    version: str | None = Field(None, min_length=1, max_length=50)
+    Name and version are immutable after creation.
+    verified_at is managed internally by the service when verification_status changes.
+    """
+
     verification_status: str | None = None
     commercial_use_allowed: bool | None = None
     derivatives_allowed: bool | None = None
@@ -54,7 +56,6 @@ class SourcePolicyUpdate(BaseModel):
     embargo_seconds: int | None = Field(None, ge=0)
     evidence_uri: str | None = Field(None, max_length=1024)
     evidence_note: str | None = None
-    verified_at: datetime | None = None
 
     model_config = {"extra": "forbid"}
 

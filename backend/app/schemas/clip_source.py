@@ -6,25 +6,21 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-class ClipSourceBase(BaseModel):
-    """Base schema for ClipSource."""
+class ClipSourceOperatorInput(BaseModel):
+    """Operator-provided fields for ClipSource creation.
+
+    These are the only fields that can be set by operators via the public API.
+    Internal/authoritative fields (media_project_id, media_session_id, etc.)
+    are populated by the system via Media Indexer adoption.
+    """
 
     mode: str
     source_policy_id: UUID | None = None
+    operator_acknowledged: bool = False
     original_reference: str | None = Field(None, max_length=1024)
     creator: str | None = Field(None, max_length=255)
     program: str | None = Field(None, max_length=255)
     title: str | None = Field(None, max_length=500)
-    media_project_id: UUID | None = None
-    media_session_id: UUID | None = None
-    media_session_label: str | None = None
-    media_id: UUID | None = None
-    media_initial_job_id: UUID | None = None
-    transcription_id: UUID | None = None
-    transcription_job_id: UUID | None = None
-    source_sha256: str | None = Field(None, min_length=64, max_length=64)
-    phase_started_at: datetime | None = None
-    operator_acknowledged: bool = False
 
     @field_validator("mode")
     @classmethod
@@ -35,25 +31,50 @@ class ClipSourceBase(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def validate_mode_requirements(self) -> "ClipSourceBase":
+    def validate_mode_requirements(self) -> "ClipSourceOperatorInput":
         if self.mode == "safe_automated" and self.source_policy_id is None:
             raise ValueError("safe_automated mode requires source_policy_id")
         if self.mode == "manual_override" and not self.operator_acknowledged:
             raise ValueError("manual_override mode requires operator_acknowledged=true")
         return self
 
-
-class ClipSourceCreate(ClipSourceBase):
-    """Schema for creating a ClipSource."""
-
     model_config = {"extra": "forbid"}
 
 
-class ClipSourceUpdate(BaseModel):
-    """Schema for updating a ClipSource.
+class ClipSourceCreate(ClipSourceOperatorInput):
+    """Schema for creating a ClipSource via public API.
 
+    Inherits operator-input fields only. Internal fields are set by the system.
+    """
+
+    pass
+
+
+class ClipSourceInternalData(BaseModel):
+    """Internal/authoritative fields populated by Media Indexer.
+
+    These fields are NEVER accepted via public API.
+    They are populated by the system during MediaSession adoption.
+    """
+
+    media_project_id: UUID | None = None
+    media_session_id: UUID | None = None
+    media_session_label: str | None = None
+    media_id: UUID | None = None
+    media_initial_job_id: UUID | None = None
+    transcription_id: UUID | None = None
+    transcription_job_id: UUID | None = None
+    source_sha256: str | None = Field(None, min_length=64, max_length=64)
+    phase_started_at: datetime | None = None
+
+
+class ClipSourceUpdate(BaseModel):
+    """Schema for updating a ClipSource via public API.
+
+    Only operator-controlled fields can be updated.
     System-managed fields (media_project_id, media_session_id, media_id,
-    transcription_id, source_sha256) are not allowed to be set via API.
+    transcription_id, source_sha256, status, rights_status) are not allowed.
+    Status transitions are handled internally by the service layer.
     """
 
     source_policy_id: UUID | None = None
@@ -61,27 +82,41 @@ class ClipSourceUpdate(BaseModel):
     creator: str | None = Field(None, max_length=255)
     program: str | None = Field(None, max_length=255)
     title: str | None = Field(None, max_length=500)
-    status: str | None = None
 
     model_config = {"extra": "forbid"}
 
-    @field_validator("status")
-    @classmethod
-    def validate_status(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
-        valid = {"pending", "ingesting", "transcribing", "ready_for_discovery", "ready", "failed", "blocked"}
-        if v not in valid:
-            raise ValueError(f"status must be one of {valid}")
-        return v
 
+class ClipSourceResponse(BaseModel):
+    """Schema for ClipSource responses.
 
-class ClipSourceResponse(ClipSourceBase):
-    """Schema for ClipSource responses."""
+    Includes all fields: operator input, internal data, and system-managed status.
+    """
 
     id: UUID
+    mode: str
+    source_policy_id: UUID | None = None
+    original_reference: str | None = None
+    creator: str | None = None
+    program: str | None = None
+    title: str | None = None
+    operator_acknowledged: bool = False
+
+    # Internal fields (populated by Media Indexer)
+    media_project_id: UUID | None = None
+    media_session_id: UUID | None = None
+    media_session_label: str | None = None
+    media_id: UUID | None = None
+    media_initial_job_id: UUID | None = None
+    transcription_id: UUID | None = None
+    transcription_job_id: UUID | None = None
+    source_sha256: str | None = None
+    phase_started_at: datetime | None = None
+
+    # System-managed status fields
     rights_status: str
     status: str
+
+    # Timestamps
     created_at: datetime
     updated_at: datetime
 
