@@ -49,24 +49,11 @@ async def health() -> HealthResponse:
     return HealthResponse(status="ok")
 
 
-@router.get(
-    "/health/readiness",
-    response_model=ReadinessResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Readiness check",
-    description="Returns 200 only if all dependencies are healthy.",
-    responses={
-        status.HTTP_503_SERVICE_UNAVAILABLE: {
-            "description": "One or more dependencies are unavailable",
-            "model": ReadinessResponse,
-        }
-    },
-)
-async def readiness(
-    session: AsyncSession = Depends(get_session),
+async def _check_readiness(
+    session: AsyncSession,
 ) -> ReadinessResponse:
     """
-    Readiness check.
+    Shared readiness logic for both /health/ready and /health/readiness.
 
     Returns 200 only if all dependencies are healthy.
     Returns 503 with degraded status if any dependency is unavailable.
@@ -110,3 +97,50 @@ async def readiness(
         )
 
     return response
+
+
+@router.get(
+    "/health/ready",
+    response_model=ReadinessResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Readiness check (alias)",
+    description="Returns 200 only if all dependencies are healthy. Alias for /health/readiness.",
+    responses={
+        status.HTTP_503_SERVICE_UNAVAILABLE: {
+            "description": "One or more dependencies are unavailable",
+            "model": ReadinessResponse,
+        }
+    },
+)
+async def ready(
+    session: AsyncSession = Depends(get_session),
+) -> ReadinessResponse:
+    """
+    Readiness check (NeoVids standard endpoint).
+    """
+    return await _check_readiness(session)
+
+
+@router.get(
+    "/health/readiness",
+    response_model=ReadinessResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Readiness check",
+    description="Returns 200 only if all dependencies are healthy.",
+    responses={
+        status.HTTP_503_SERVICE_UNAVAILABLE: {
+            "description": "One or more dependencies are unavailable",
+            "model": ReadinessResponse,
+        }
+    },
+)
+async def readiness(
+    session: AsyncSession = Depends(get_session),
+) -> ReadinessResponse:
+    """
+    Readiness check.
+
+    Returns 200 only if all dependencies are healthy.
+    Returns 503 with degraded status if any dependency is unavailable.
+    """
+    return await _check_readiness(session)
