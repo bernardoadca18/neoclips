@@ -5,10 +5,15 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.idempotency import compute_request_fingerprint, validate_idempotency
+from app.clients.media_indexer_client import MediaIndexerClient
 from app.models.entities import ClipSource
 from app.repositories.clip_source_repository import ClipSourceRepository
 from app.repositories.source_policy_repository import SourcePolicyRepository
-from app.schemas.clip_source import ClipSourceCreate, ClipSourceUpdate
+from app.schemas.clip_source import (
+    ClipSourceCreate,
+    ClipSourceFromMediaSessionRequest,
+    ClipSourceUpdate,
+)
 from app.services.base import BaseService
 from app.services.policy_eligibility_service import (
     PolicyEligibilityService,
@@ -164,3 +169,105 @@ class ClipSourceService(BaseService[ClipSourceRepository]):
     async def get_by_status(self, status: str) -> list[ClipSource]:
         """Get sources by status."""
         return await self.repository.get_by_status(status)
+
+    async def create_from_media_session(
+        self,
+        data: ClipSourceFromMediaSessionRequest,
+        media_indexer_client: MediaIndexerClient,
+        idempotency_key: str | None = None,
+    ) -> ClipSource:
+        """Create a ClipSource from an existing Media Indexer session.
+
+        This method:
+        1. Queries Media Indexer to validate the session exists
+        2. Validates policy eligibility (if safe_automated mode)
+        3. Creates the ClipSource with media_session_id reference
+        4. Handles idempotency to prevent duplicate creation
+
+        Args:
+            data: Request data with media_session_id and mode
+            media_indexer_client: HTTP client for Media Indexer API
+            idempotency_key: Optional idempotency key for replay protection
+
+        Returns:
+            Created or existing ClipSource
+
+        Raises:
+            MediaIndexerAPIError: If session not found or API error
+            ValidationError: If policy validation fails
+            IdempotencyConflictError: If idempotency key reused with different data
+        """
+        create_data = data.model_dump()
+
+        # Handle idempotency
+        if idempotency_key:
+            fingerprint = compute_request_fingerprint(create_data)
+            existing = await self.repository.get_by_idempotency_key(idempotency_key)
+
+            if existing:
+                is_match, is_conflict = validate_idempotency(
+                    existing.idempotency_key,
+                    existing.request_fingerprint,
+                    idempotency_key,
+                    fingerprint,
+                )
+                if is_conflict:
+                    raise IdempotencyConflictError(
+                        f"Idempotency key '{idempotency_key}' already used with different request data"
+                    )
+                if is_match:
+                    return existing  # Idempotent replay
+
+            create_data["idempotency_key"] = idempotency_key
+            create_data["request_fingerprint"] = fingerprint
+
+        # Check for existing ClipSource with this media_session_id
+        existing_by_session = await self.repository.get_by_media_session_id(
+            data.media_session_id
+        )
+        if existing_by_session:
+            # Idempotent: return existing source for this media_session_id
+            return existing_by_session
+
+        # Query Media Indexer to validate session exists and get metadata
+        try:
+            session_info = await media_indexer_client.get_session(data.media_session_id)
+        except Exception as e:
+            raise ValidationError(
+                f"Failed to retrieve Media Indexer session {data.media_session_id}: {e}"
+            ) from e
+
+        # Validate mode requirements
+        if data.mode == "safe_automated":
+            if not data.source_policy_id:
+                raise ValidationError("safe_automated mode requires a source_policy_id")
+
+            policy = await self.policy_repository.get(data.source_policy_id)
+            if not policy:
+                raise PolicyNotFoundError(f"Policy {data.source_policy_id} not found")
+
+            eligibility_service = PolicyEligibilityService()
+            try:
+                eligibility_service.validate_for_source_admission(policy)
+            except PolicyViolationError as e:
+                raise ValidationError(f"Policy validation failed: {e.reason}") from e
+
+            create_data["rights_status"] = "verified"
+
+        elif data.mode == "manual_override":
+            if not data.operator_acknowledged:
+                raise ValidationError("manual_override mode requires operator_acknowledged=true")
+            create_data["rights_status"] = "unverified"
+
+        # Populate fields from Media Indexer session
+        create_data["status"] = "pending"
+        create_data["media_session_id"] = data.media_session_id
+        create_data["media_id"] = session_info.media_id
+
+        # Set title from session label if not provided
+        if not create_data.get("title"):
+            create_data["title"] = session_info.label
+
+        # Create the source
+        source = await self.repository.create(create_data)
+        return source

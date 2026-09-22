@@ -121,3 +121,38 @@ class ClipSourceResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ClipSourceFromMediaSessionRequest(BaseModel):
+    """Request schema for creating a ClipSource from a Media Indexer session.
+
+    This endpoint provides idempotent creation from an existing MediaSession.
+    The media_session_id must exist in Media Indexer and be in a valid state.
+    """
+
+    media_session_id: UUID
+    mode: str
+    source_policy_id: UUID | None = None
+    operator_acknowledged: bool = False
+    original_reference: str | None = Field(None, max_length=1024)
+    creator: str | None = Field(None, max_length=255)
+    program: str | None = Field(None, max_length=255)
+    title: str | None = Field(None, max_length=500)
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, v: str) -> str:
+        valid = {"safe_automated", "manual_override"}
+        if v not in valid:
+            raise ValueError(f"mode must be one of {valid}")
+        return v
+
+    @model_validator(mode="after")
+    def validate_mode_requirements(self) -> "ClipSourceFromMediaSessionRequest":
+        if self.mode == "safe_automated" and self.source_policy_id is None:
+            raise ValueError("safe_automated mode requires source_policy_id")
+        if self.mode == "manual_override" and not self.operator_acknowledged:
+            raise ValueError("manual_override mode requires operator_acknowledged=true")
+        return self
+
+    model_config = {"extra": "forbid"}

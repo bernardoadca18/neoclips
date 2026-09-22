@@ -32,3 +32,9 @@ class ClipSourceRepository(BaseRepository[ClipSource]):
         stmt = select(ClipSource).where(ClipSource.idempotency_key == idempotency_key)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_by_media_session_id(self, media_session_id: UUID) -> ClipSource | None:
+        """Get source by Media Indexer session ID."""
+        stmt = select(ClipSource).where(ClipSource.media_session_id == media_session_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()

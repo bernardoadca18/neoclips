@@ -7,6 +7,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.entities import ClipSource
+
 from app.clients.media_indexer_client import (
     MediaIndexerAPIError,
     MediaIndexerClient,
@@ -16,7 +18,12 @@ from app.clients.media_indexer_client import (
     get_media_indexer_client,
 )
 from app.core.database import get_session
-from app.schemas.clip_source import ClipSourceCreate, ClipSourceResponse, ClipSourceUpdate
+from app.schemas.clip_source import (
+    ClipSourceCreate,
+    ClipSourceFromMediaSessionRequest,
+    ClipSourceResponse,
+    ClipSourceUpdate,
+)
 from app.services.clip_source_service import (
     ClipSourceService,
     IdempotencyConflictError,
@@ -605,3 +612,47 @@ async def get_source_transcript(
                 }
             },
         )
+
+
+@router.post(
+    "/from-media-session",
+    response_model=ClipSourceResponse,
+    status_code=201,
+    summary="Create source from Media Indexer session",
+    description="Idempotent creation from an existing MediaSession with policy validation.",
+)
+async def create_from_media_session(
+    request: ClipSourceFromMediaSessionRequest,
+    session: AsyncSession = Depends(get_session),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+) -> ClipSource:
+    """Create a ClipSource from an existing Media Indexer session.
+
+    This endpoint enables idempotent creation of a ClipSource from a
+    Media Indexer MediaSession. It validates the session exists and
+    enforces policy eligibility requirements.
+
+    Idempotency:
+    - Provide Idempotency-Key header for replay protection
+    - Same media_session_id always returns existing ClipSource
+
+    Modes:
+    - safe_automated: Requires valid source_policy_id with verified status
+    - manual_override: Requires operator_acknowledged=true
+
+    Returns the created or existing ClipSource.
+    """
+    from app.services.clip_source_service import ClipSourceService
+
+    service = ClipSourceService(session)
+    try:
+        source = await service.create_from_media_session(
+            data=request,
+            media_indexer_client=get_media_indexer_client(),
+            idempotency_key=idempotency_key,
+        )
+        await session.commit()
+        return source
+    except Exception as e:
+        await session.rollback()
+        raise

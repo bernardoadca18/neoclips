@@ -15,6 +15,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - neovids
     restart: unless-stopped
 
   redis:
@@ -29,6 +31,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - neovids
     restart: unless-stopped
 
   api:
@@ -60,6 +64,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      neovids:
+        aliases:
+          - neoclips
     restart: unless-stopped
 
   worker:
@@ -89,8 +97,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - neovids
     restart: unless-stopped
 
 volumes:
   neoclips-db-data:
   neoclips-redis-data:
+
+networks:
+  neovids:
+    external: true
+    name: neovids

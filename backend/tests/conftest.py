@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import AsyncGenerator, Generator
 from typing import Any
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -10,6 +11,12 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from testcontainers.community.postgres import PostgresContainer
+
+# Mock Celery broker before any Celery app is imported
+# This prevents connection attempts to Redis during test collection
+import os
+os.environ.setdefault("CELERY_BROKER_URL", "memory://")
+os.environ.setdefault("CELERY_RESULT_BACKEND", "cache+memory://")
 
 from app.main import app
 from app.models.base import Base
@@ -129,3 +136,41 @@ async def async_client(session: AsyncSession) -> AsyncGenerator[AsyncClient, Non
         yield client
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def mock_media_indexer_session():
+    """Mock Media Indexer client get_session method.
+
+    Usage in tests:
+        @pytest.mark.anyio
+        async def test_my_test(self, async_client, mock_media_indexer_session):
+            from app.clients.media_indexer_client import SessionOut
+            mock_media_indexer_session.return_value = SessionOut(
+                id=uuid4(),
+                project_id=uuid4(),
+                media_id=uuid4(),
+                label="Test Video",
+                status="ready",
+            )
+            # ... test code
+    """
+    from app.clients.media_indexer_client import SessionOut
+    from datetime import datetime, timezone
+
+    async def _mock_get_session(session_id):
+        """Default mock implementation returning a ready session."""
+        return SessionOut(
+            id=session_id,
+            project_id=uuid4(),
+            media_id=uuid4(),
+            label="Mocked Video",
+            status="ready",
+            created_at=datetime.now(timezone.utc),
+        )
+
+    with patch(
+        "app.clients.media_indexer_client.MediaIndexerClient.get_session",
+        side_effect=_mock_get_session,
+    ) as mock:
+        yield mock
